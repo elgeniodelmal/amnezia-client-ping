@@ -1,3 +1,4 @@
+
 name: Build Amnezia Ping APK
 
 on:
@@ -125,21 +126,45 @@ jobs:
           set -euo pipefail
           bash deploy/build.sh -t android --sign
 
-      - name: Collect APK
+      - name: Collect ARM64 APK
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          find deploy/build -type f \
-            -name '*.apk' \
-            ! -name '*unsigned*' \
-            -exec cp {} artifacts/ \;
+
+          APK_DIR="deploy/build/client/android-build/build/outputs/apk/oss/release"
+
+          mapfile -t APKS < <(
+            find "$APK_DIR" -maxdepth 1 -type f \
+              -name '*-arm64-v8a-release.apk' \
+              ! -name '*unsigned*'
+          )
+
+          if [[ ${#APKS[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one ARM64 release APK"
+            find deploy/build -type f -name '*.apk'
+            exit 1
+          fi
+
+          cp "${APKS[0]}" artifacts/Amnezia-Ping-ARM64.apk
+
           ls -lh artifacts
-          test -n "$(find artifacts -name '*.apk' -print -quit)"
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
+            -type f -name apksigner | sort -V | tail -n 1)
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose \
+            artifacts/Amnezia-Ping-ARM64.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Amnezia-Ping-Android
-          path: artifacts/*.apk
+          name: Amnezia-Ping-ARM64
+          path: artifacts/Amnezia-Ping-ARM64.apk
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
