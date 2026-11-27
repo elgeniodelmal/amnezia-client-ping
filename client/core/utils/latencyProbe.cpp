@@ -5,6 +5,7 @@
 #include <numeric>
 
 #include <QElapsedTimer>
+#include <QDebug>
 #include <QHostInfo>
 #include <QSocketNotifier>
 #include <QTimer>
@@ -47,7 +48,6 @@ namespace
     constexpr int handshakeRefused = ECONNREFUSED;
 #endif
 
-    bool icmpSocketsUnavailable = false;
 
     int lastSocketError()
     {
@@ -216,7 +216,11 @@ void LatencyProbe::onHostResolved(const QHostInfo &hostInfo)
 void LatencyProbe::startWithAddress(const QHostAddress &address)
 {
     m_address = address;
-    const bool canUseIcmp = address.protocol() == QAbstractSocket::IPv4Protocol && !icmpSocketsUnavailable;
+    qInfo() << "[PingV2] Resolved address"
+            << address.toString()
+            << "Port:" << m_endpoint.port
+            << "TCP:" << m_endpoint.isTcpTransport;
+    const bool canUseIcmp = address.protocol() == QAbstractSocket::IPv4Protocol;
     const bool canUseTcp = m_endpoint.port != 0;
 
     if (canUseTcp && (m_endpoint.isTcpTransport || !canUseIcmp)) {
@@ -232,6 +236,8 @@ void LatencyProbe::startSampling(Method method)
 {
     ++m_phase;
     m_method = method;
+    qInfo() << "[PingV2] Method:"
+            << (method == Method::Icmp ? "ICMP" : "TCP");
     m_replyTimesMs.clear();
     m_startedSamples = 0;
     m_completedSamples = 0;
@@ -263,7 +269,7 @@ void LatencyProbe::sendIcmpSample()
     const int phase = m_phase;
     PingSender *sender = PingSenderFactory::create(QHostAddress(), this);
     if (!sender->isValid()) {
-        icmpSocketsUnavailable = true;
+        qWarning() << "[PingV2] ICMP socket unavailable";
         sender->deleteLater();
         onIcmpUnavailable(phase);
         return;
@@ -348,6 +354,9 @@ void LatencyProbe::completeSample(int phase, std::optional<int> replyTimeMs)
     if (phase != m_phase) {
         return;
     }
+    qInfo() << "[PingV2] Sample:"
+            << replyTimeMs.value_or(-1)
+            << "ms";
     if (replyTimeMs.has_value()) {
         m_replyTimesMs.append(replyTimeMs.value());
     }
@@ -381,5 +390,9 @@ void LatencyProbe::onIcmpUnavailable(int phase)
 void LatencyProbe::finish(const LatencyResult &result)
 {
     ++m_phase;
+    qInfo() << "[PingV2] Result:"
+            << result.latencyMs << "ms"
+            << "Jitter:" << result.jitterMs
+            << "Loss:" << result.lossPercent;
     emit finished(result);
 }

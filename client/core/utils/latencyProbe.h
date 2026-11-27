@@ -48,7 +48,7 @@ class LatencyProbe : public QObject
 public:
     static constexpr int samplesPerProbe = 4;
     static constexpr int sampleIntervalMs = 200;
-    static constexpr int sampleTimeoutMs = 1500;
+    static constexpr int sampleTimeoutMs = 3000;
 
     explicit LatencyProbe(const LatencyEndpoint &endpoint, QObject *parent = nullptr);
 
