@@ -1,0 +1,155 @@
+name: Fix Amnezia Ping V2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-ping:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Apply ping fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          cpp = Path("client/core/utils/latencyProbe.cpp")
+          header = Path("client/core/utils/latencyProbe.h")
+
+          if not cpp.is_file() or not header.is_file():
+              raise SystemExit("LatencyProbe files not found")
+
+          source = cpp.read_text()
+          head = header.read_text()
+
+          def replace_once(text, old, new):
+              if text.count(old) != 1:
+                  raise SystemExit(
+                      "Unexpected source code: " + old
+                  )
+              return text.replace(old, new, 1)
+
+          source = replace_once(
+              source,
+              "#include <QElapsedTimer>",
+              "#include <QElapsedTimer>\n#include <QDebug>"
+          )
+
+          source = replace_once(
+              source,
+              "    bool icmpSocketsUnavailable = false;\n",
+              ""
+          )
+
+          source = replace_once(
+              source,
+              " && !icmpSocketsUnavailable",
+              ""
+          )
+
+          source = replace_once(
+              source,
+              "        icmpSocketsUnavailable = true;",
+              '        qWarning() << "[PingV2] ICMP socket unavailable";'
+          )
+
+          source = replace_once(
+              source,
+              "    m_address = address;",
+              """    m_address = address;
+              qInfo() << "[PingV2] Resolved address"
+                      << address.toString()
+                      << "Port:" << m_endpoint.port
+                      << "TCP:" << m_endpoint.isTcpTransport;"""
+          )
+
+          source = replace_once(
+              source,
+              "    m_method = method;",
+              """    m_method = method;
+              qInfo() << "[PingV2] Method:"
+                      << (method == Method::Icmp ? "ICMP" : "TCP");"""
+          )
+
+          source = replace_once(
+              source,
+              "    if (replyTimeMs.has_value()) {",
+              """    qInfo() << "[PingV2] Sample:"
+                      << replyTimeMs.value_or(-1)
+                      << "ms";
+              if (replyTimeMs.has_value()) {"""
+          )
+
+          source = replace_once(
+              source,
+              "    emit finished(result);",
+              """    qInfo() << "[PingV2] Result:"
+                      << result.latencyMs << "ms"
+                      << "Jitter:" << result.jitterMs
+                      << "Loss:" << result.lossPercent;
+              emit finished(result);"""
+          )
+
+          head = replace_once(
+              head,
+              "sampleTimeoutMs = 1500",
+              "sampleTimeoutMs = 3000"
+          )
+
+          cpp.write_text(source)
+          header.write_text(head)
+
+          print("Ping V2 diagnostic patch applied")
+          PY
+
+      - name: Verify changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git diff --check
+
+          echo "=== Modified files ==="
+          git status --short
+
+          echo "=== Ping diagnostics ==="
+          grep -n 'PingV2' client/core/utils/latencyProbe.cpp
+
+          echo "=== Timeout ==="
+          grep -n 'sampleTimeoutMs' client/core/utils/latencyProbe.h
+
+          echo "=== Verify old ICMP flag removed ==="
+          if grep -q 'icmpSocketsUnavailable' \
+            client/core/utils/latencyProbe.cpp; then
+            echo "::error::Old ICMP flag still present"
+            exit 1
+          fi
+
+          echo "=== Full diff ==="
+          git diff
+
+      - name: Commit ping fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add client/core/utils/latencyProbe.cpp
+          git add client/core/utils/latencyProbe.h
+
+          git commit -m "Fix ping retries and add latency diagnostics"
+
+          git push origin HEAD:dev
