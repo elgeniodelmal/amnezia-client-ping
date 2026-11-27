@@ -1,4 +1,3 @@
-
 name: Build Amnezia Ping APK
 
 on:
@@ -125,9 +124,27 @@ jobs:
           QT_INSTALL_DIR: ${{ runner.temp }}
           QT_ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android.keystore
           QT_ANDROID_KEYSTORE_ALIAS: amneziaping
+          PROD_AGW_PUBLIC_KEY_B64: 'LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQ0lqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FnOEFNSUlDQ2dLQ0FnRUFqNW14bC80REwzU2s4OW50eHM1RwpYM0phd0dRV0lvcTZydk5rT3pOR3VOZ2VkTlMyK3BpNmhabDNJemwxSW85b200S2lVbE1UNm1nTE8xaFRyOXErCnM3Q1lobHZyb0ZBN0VydWNGKzlMKzdGQ3QwSWdpMGtJSy9SMi92eGQvMkhhVXJvcm4vYVN2dnV0a1l3YmZ4cVcKU3d0ekUrUnVCZURXR3ZFdDkzN09XMG9xWU9OUFl2OUU0VDU2RHovRVo2djJ0OGVqQW5LTGJHRC9Hb2NNbWlwSwo3ZXRGU2lTTUFCMlJtYXp0cVRxNE5sZUJlcGZPODBYcFlsVzlwQ1NYdUhjRTh3eEhjemt6eHNieU1BTXNHL0szCnZVUVk2cVB0b2hxcXpTU0J3YS84dTJwdE5IQmVvcjdsN0RkWVhlUi9OcWNjNHo5MlZVa1o1bE9WUjRldmtTNVYKL3dRcXA1dG5PSkVqM05qVWhFaFhGb05FYXBiWmQxYmg2aVFvVWs3akMxVGR2S0ovblBLR1pBc0hScHIwck5LegpmeC9OL09vNmxyMnloLytwczZWeFRrYlBtQjZFODVXT08zVXZqSW1aVVkwWFFkQmpXbGUvNGlKTGRFQzc3TnIwCmpYaGRnZXlwdWN5NmprQjZpQkhNZVZNbHJOTUVWN1V4b0JSL2NDTng1NXp1LzhzbWw1QnlpRHZDRFQ3c1JvbU4KTmdWdDVTL0ZhVmpZdXpGVWlmSjEyVG9DaFhGZ0VTS0ZtdXNvN1dsdUVhV3ZNSUdSRWRyTXJLUUtIZllMT3pXRgoyQjVaSkRxdzRvMDNmVTRKLzZydzYxTTFiK3JqVnBYTWpQbnpjMkErUmdjalR2WHY5NTVnZlprd2U0bHQ1d2svCjNqOHpNVm8zK3pMck1UQWFFZUlVTTBVQ0F3RUFBUT09Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQ=='
+          SANDBOX_AGW_PUBLIC_KEY_B64: 'LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQ0lqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FnOEFNSUlDQ2dLQ0FnRUF3TUpiWWxHeG4zbCswWGlHQTlJLwpCSEs4SFgvYWV0N0E5R1ZMODE3YXBEVWVMNnNkSVNSQmRvcHY1WTBGZHJCSFNKV1NVZFd0VnhWYXpKQjQ2Sjh4CjMyNy81SDVwaTBua2ZSYmNneEJHU0d4aEtPdndSZStXUFZiMmY4MWpsa2VuWks0NmM5QzdkTm1YLzMxMHJsSFkKQndPblpjZHcyb0t1NmhUTkR3azNueVVvMnYyL2xlTklNTHN2ODRSbEhBWDZUeXg1c2xxOHlzZXdoY21kZnYxNwpXUWpGN2FsYnExMlphZlRTanRYcURjc3JrMm9GOG1meXp4TGpTWGJ4UUhLSURIa2Z6M1NVWENzL0g5dHQxeWRLCjJZajZuSXh2OThIRVNaOE5nNDBPWlBoSERleDhSdTFOamNXbG8yRVdOTTF4VDhJcW1CVDIxUEx1eXpHak5Td0cKT2pubTFWMkVjamVyVm1STmhGVEpHNzBSa1VSRC9pMk1EYkcrWktwcVB0VzF1TDh3RXQySWtTcU5mS2NmK1RGKwpVSlpaZm0xbERVTXBXSjJlV0pHcmdPVVg4L2Y4di9HQit4NFB4VW8xbTdWL3BETHFDVVBtM2wyZGthTTlQMHNNCjZsTzAraktxZklGbkcxempjM2lmN3IxWWJEc1pseWwzODlxOUhyaDd0K0x3ai9KWGtEeEZhVG51ZE04ZWdhWGsKR1g1WXhaaUVEbUNDTFJza1J3QkJVYVlmZlhJcEZiSThzTzJYajBKNS9pbTV4dHU3VHRmSmt0Y1B6REw5dXlHMQpFYnQ4b1NBNEZUelRpZDZad2o1NVlnRGZ6MEZNbk5tWGg4MFQxeE16bGJpNnkrQkN1bmErSSs3TWNNUm84eXozClZ6ellKMC9KN1BwSHBYb1p2N0sxcURzQ0F3RUFBUT09Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQ=='
+          PROD_S3_ENDPOINT: 'https://s3.eu-north-1.amazonaws.com/amnezia/, https://storage.googleapis.com/lambda-list/, https://amnzstrg01.blob.core.windows.net/lambda-list/, https://objectstorage.eu-zurich-1.oraclecloud.com/n/zrhfyaq6qxvh/b/lambda-list/o/'
+          FALLBACK_S3_ENDPOINT: 'https://storage.mwsapis.ru/lambda-list/, https://s3.cloudruserapi.net/lambda-list/, https://188.225.57.22/lambda-list/'
+          SANDBOX_S3_ENDPOINT: 'https://s3.eu-north-1.amazonaws.com/amnezia-dev/'
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "=== Validate AGW public keys ==="
+
+          printf '%s' "$PROD_AGW_PUBLIC_KEY_B64" \
+            | base64 -d \
+            | openssl pkey -pubin -noout
+
+          printf '%s' "$SANDBOX_AGW_PUBLIC_KEY_B64" \
+            | base64 -d \
+            | openssl pkey -pubin -noout
+
+          echo "=== Build Android APK ==="
+
           bash deploy/build.sh -t android --sign
 
       - name: Collect universal APK
@@ -182,6 +199,7 @@ jobs:
           grep -q '^lib/arm64-v8a/' /tmp/apk-files.txt
 
           echo "=== Verify standalone package ==="
+
           if grep -Eq "^package:.*[[:space:]]split=" artifacts/apk-info.txt; then
             echo "::error::APK is a split package"
             exit 1
@@ -196,7 +214,7 @@ jobs:
             > artifacts/manifest-info.txt
 
           echo "=== SHA256 ==="
-          sha256sum "$APK"
+          sha256sum "$APK" | tee artifacts/sha256.txt
 
           echo "=== Final size ==="
           ls -lh "$APK"
