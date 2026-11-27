@@ -1,0 +1,242 @@
+name: Fix Amnezia Ping V3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-ping-v3:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Add HTTPS latency indicator
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          page = Path("client/ui/qml/Pages2/PageHome.qml")
+
+          if not page.is_file():
+              raise SystemExit("PageHome.qml not found")
+
+          source = page.read_text(encoding="utf-8")
+
+          if "id: httpsLatencyV3" in source:
+              print("Ping V3 already installed")
+              raise SystemExit(0)
+
+          anchor = """            ServerLatencyBadge {
+                          latencyMs: ServerLatencyController.defaultServerLatencyMs"""
+
+          anchor = (
+              "            ServerLatencyBadge {\n"
+              "                latencyMs: "
+              "ServerLatencyController.defaultServerLatencyMs"
+          )
+
+          if source.count(anchor) != 1:
+              raise SystemExit("Unexpected PageHome.qml layout")
+
+          indicator = """
+                      Item {
+                          id: httpsLatencyV3
+
+                          Layout.fillWidth: true
+                          Layout.preferredHeight: 36
+
+                          property int latency: -1
+                          property bool testing: false
+                          property bool attempted: false
+                          property var request: null
+                          property double startedAt: 0
+
+                          function cancelTest() {
+                              var oldRequest = request
+                              request = null
+                              testing = false
+                              timeoutTimer.stop()
+
+                              if (oldRequest !== null)
+                                  oldRequest.abort()
+                          }
+
+                          function testLatency() {
+                              if (testing)
+                                  return
+
+                              testing = true
+                              attempted = true
+
+                              var xhr = new XMLHttpRequest()
+                              request = xhr
+
+                              xhr.onreadystatechange = function() {
+                                  if (request !== xhr)
+                                      return
+
+                                  if (xhr.readyState !== XMLHttpRequest.DONE)
+                                      return
+
+                                  timeoutTimer.stop()
+
+                                  if (xhr.status === 204) {
+                                      latency = Math.max(
+                                          1, Date.now() - startedAt
+                                      )
+                                  } else {
+                                      latency = -1
+                                  }
+
+                                  request = null
+                                  testing = false
+
+                                  console.log(
+                                      "[PingV3] HTTPS:",
+                                      latency,
+                                      "ms, status:",
+                                      xhr.status
+                                  )
+                              }
+
+                              try {
+                                  xhr.open(
+                                      "GET",
+                                      "https://www.gstatic.com/generate_204?t="
+                                      + Date.now()
+                                  )
+
+                                  xhr.setRequestHeader(
+                                      "Cache-Control", "no-cache"
+                                  )
+
+                                  startedAt = Date.now()
+                                  timeoutTimer.restart()
+                                  xhr.send()
+                              } catch (error) {
+                                  cancelTest()
+                                  latency = -1
+                                  console.log("[PingV3]", error)
+                              }
+                          }
+
+                          Timer {
+                              id: timeoutTimer
+                              interval: 8000
+                              repeat: false
+
+                              onTriggered: {
+                                  httpsLatencyV3.cancelTest()
+                                  httpsLatencyV3.latency = -1
+                                  console.log("[PingV3] HTTPS timeout")
+                              }
+                          }
+
+                          Timer {
+                              interval: 10000
+                              repeat: true
+                              running: httpsLatencyV3.visible
+                                       && httpsLatencyV3.attempted
+
+                              onTriggered: httpsLatencyV3.testLatency()
+                          }
+
+                          Text {
+                              anchors.centerIn: parent
+                              font.pixelSize: 15
+
+                              text: {
+                                  if (httpsLatencyV3.testing)
+                                      return "HTTPS: ..."
+
+                                  if (!httpsLatencyV3.attempted)
+                                      return "HTTPS: нажмите для теста"
+
+                                  if (httpsLatencyV3.latency < 0)
+                                      return "HTTPS: нет ответа"
+
+                                  return "HTTPS: "
+                                      + httpsLatencyV3.latency
+                                      + " мс"
+                              }
+
+                              color: {
+                                  var ms = httpsLatencyV3.latency
+
+                                  if (ms < 0 || httpsLatencyV3.testing)
+                                      return "#999999"
+
+                                  if (ms < 100)
+                                      return "#4CAF50"
+
+                                  if (ms < 200)
+                                      return "#FFC107"
+
+                                  if (ms < 300)
+                                      return "#FF9800"
+
+                                  return "#F44336"
+                              }
+                          }
+
+                          MouseArea {
+                              anchors.fill: parent
+                              onClicked: httpsLatencyV3.testLatency()
+                          }
+
+                          Component.onDestruction: cancelTest()
+                      }
+
+          """
+
+          source = source.replace(
+              anchor,
+              indicator + anchor,
+              1
+          )
+
+          page.write_text(source, encoding="utf-8")
+
+          print("Ping V3 HTTPS indicator installed")
+          PY
+
+      - name: Verify changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git diff --check
+
+          grep -n 'httpsLatencyV3' \
+            client/ui/qml/Pages2/PageHome.qml
+
+          git diff --stat
+          git diff
+
+      - name: Commit changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add client/ui/qml/Pages2/PageHome.qml
+
+          if git diff --cached --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+
+          git commit -m "Add HTTPS latency indicator V3"
+
+          git push origin HEAD:dev
