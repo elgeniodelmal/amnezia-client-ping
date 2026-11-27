@@ -102,9 +102,12 @@ jobs:
           dir: ${{ runner.temp }}
 
       - name: Generate temporary signing key
+        shell: bash
         run: |
+          set -euo pipefail
           PASS=$(openssl rand -hex 24)
           echo "::add-mask::$PASS"
+
           keytool -genkeypair \
             -keystore android.keystore \
             -storepass "$PASS" \
@@ -114,6 +117,7 @@ jobs:
             -keysize 2048 \
             -validity 10000 \
             -dname "CN=Amnezia Ping"
+
           echo "QT_ANDROID_KEYSTORE_STORE_PASS=$PASS" >> "$GITHUB_ENV"
 
       - name: Build APK
@@ -126,45 +130,91 @@ jobs:
           set -euo pipefail
           bash deploy/build.sh -t android --sign
 
-      - name: Collect ARM64 APK
+      - name: Collect universal APK
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p artifacts
 
-          APK_DIR="deploy/build/client/android-build/build/outputs/apk/oss/release"
+          APK="deploy/build/client/android-build/AmneziaVPN.apk"
 
-          mapfile -t APKS < <(
-            find "$APK_DIR" -maxdepth 1 -type f \
-              -name '*-arm64-v8a-release.apk' \
-              ! -name '*unsigned*'
-          )
-
-          if [[ ${#APKS[@]} -ne 1 ]]; then
-            echo "::error::Expected exactly one ARM64 release APK"
+          if [[ ! -f "$APK" ]]; then
+            echo "::error::Universal APK not found"
             find deploy/build -type f -name '*.apk'
             exit 1
           fi
 
-          cp "${APKS[0]}" artifacts/Amnezia-Ping-ARM64.apk
+          cp "$APK" artifacts/Amnezia-Ping-Universal.apk
 
           ls -lh artifacts
 
-      - name: Verify APK signature
+      - name: Verify and diagnose APK
         shell: bash
         run: |
           set -euo pipefail
+
+          APK="artifacts/Amnezia-Ping-Universal.apk"
+
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
             -type f -name apksigner | sort -V | tail -n 1)
-          test -n "$APKSIGNER"
-          "$APKSIGNER" verify --verbose \
-            artifacts/Amnezia-Ping-ARM64.apk
 
-      - name: Upload APK
+          AAPT=$(find "$ANDROID_HOME/build-tools" \
+            -type f -name aapt | sort -V | tail -n 1)
+
+          test -n "$APKSIGNER"
+          test -n "$AAPT"
+
+          echo "=== APK integrity ==="
+          unzip -tq "$APK"
+
+          echo "=== APK signature ==="
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+          echo "=== APK manifest ==="
+          "$AAPT" dump badging "$APK" | tee artifacts/apk-info.txt
+
+          echo "=== Native libraries ==="
+          unzip -Z1 "$APK" | grep '^lib/' | cut -d/ -f2 | sort -u
+
+          echo "=== Verify ARM64 support ==="
+          unzip -Z1 "$APK" > /tmp/apk-files.txt
+          grep -q '^lib/arm64-v8a/' /tmp/apk-files.txt
+
+          echo "=== Verify standalone package ==="
+          if grep -Eq "^package:.*[[:space:]]split=" artifacts/apk-info.txt; then
+            echo "::error::APK is a split package"
+            exit 1
+          fi
+
+          if grep -q "uses-split:" artifacts/apk-info.txt; then
+            echo "::error::APK requires additional splits"
+            exit 1
+          fi
+
+          "$AAPT" dump xmltree "$APK" AndroidManifest.xml \
+            > artifacts/manifest-info.txt
+
+          echo "=== SHA256 ==="
+          sha256sum "$APK"
+
+          echo "=== Final size ==="
+          ls -lh "$APK"
+
+      - name: Upload universal APK
         uses: actions/upload-artifact@v4
         with:
-          name: Amnezia-Ping-ARM64
-          path: artifacts/Amnezia-Ping-ARM64.apk
+          name: Amnezia-Ping-Universal
+          path: artifacts/Amnezia-Ping-Universal.apk
           compression-level: 0
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostic information
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: APK-Diagnostics
+          path: artifacts/*.txt
+          if-no-files-found: ignore
           retention-days: 14
