@@ -1,0 +1,1413 @@
+diff --git a/client/amneziaApplication.cpp b/client/amneziaApplication.cpp
+index 27f915a..6de2326 100644
+--- a/client/amneziaApplication.cpp
++++ b/client/amneziaApplication.cpp
+@@ -22,6 +22,7 @@
+ #include "core/protocols/qmlRegisterProtocols.h"
+ #include "logger.h"
+ #include "ui/controllers/qml/pageController.h"
++#include "ui/controllers/serverLatencyUiController.h"
+ #include "ui/models/installedAppsModel.h"
+ #include "ui/utils/mtProxyPublicHostInput.h"
+ #include "version.h"
+@@ -257,6 +258,7 @@ void AmneziaApplication::registerTypes()
+     Vpn::declareQmlVpnConnectionStateEnum();
+     PageLoader::declareQmlPageEnum();
+     UpdateState::declareQmlUpdateStateEnum();
++    ServerLatencyUiController::declareQmlServerQualityEnum();
+ }
+ 
+ void AmneziaApplication::loadFonts()
+diff --git a/client/cmake/sources.cmake b/client/cmake/sources.cmake
+index ee7ebae..547d5bd 100644
+--- a/client/cmake/sources.cmake
++++ b/client/cmake/sources.cmake
+@@ -51,6 +51,7 @@ set(HEADERS ${HEADERS}
+     ${CLIENT_ROOT_DIR}/core/controllers/api/subscriptionController.h
+     ${CLIENT_ROOT_DIR}/core/controllers/api/newsController.h
+     ${CLIENT_ROOT_DIR}/core/controllers/updateController.h
++    ${CLIENT_ROOT_DIR}/core/controllers/serverLatencyController.h
+     ${CLIENT_ROOT_DIR}/core/repositories/secureServersRepository.h
+     ${CLIENT_ROOT_DIR}/core/repositories/secureAppSettingsRepository.h
+     ${CLIENT_ROOT_DIR}/core/protocols/qmlRegisterProtocols.h
+@@ -62,6 +63,7 @@ set(HEADERS ${HEADERS}
+     ${CMAKE_CURRENT_BINARY_DIR}/version.h
+     ${CLIENT_ROOT_DIR}/core/utils/selfhosted/sshClient.h
+     ${CLIENT_ROOT_DIR}/core/utils/networkUtilities.h
++    ${CLIENT_ROOT_DIR}/core/utils/latencyProbe.h
+     ${CLIENT_ROOT_DIR}/core/utils/payloadSender.h
+     ${CLIENT_ROOT_DIR}/core/utils/serialization/serialization.h
+     ${CLIENT_ROOT_DIR}/core/utils/serialization/transfer.h
+@@ -86,6 +88,8 @@ set(HEADERS ${HEADERS}
+     ${CLIENT_ROOT_DIR}/mozilla/shared/ipaddress.h
+     ${CLIENT_ROOT_DIR}/mozilla/shared/leakdetector.h
+     ${CLIENT_ROOT_DIR}/mozilla/controllerimpl.h
++    ${CLIENT_ROOT_DIR}/mozilla/pingsender.h
++    ${CLIENT_ROOT_DIR}/mozilla/pingsenderfactory.h
+ )
+ 
+ if(NOT IOS AND NOT MACOS_NE)
+@@ -141,6 +145,7 @@ set(SOURCES ${SOURCES}
+     ${CLIENT_ROOT_DIR}/core/controllers/api/subscriptionController.cpp
+     ${CLIENT_ROOT_DIR}/core/controllers/api/newsController.cpp
+     ${CLIENT_ROOT_DIR}/core/controllers/updateController.cpp
++    ${CLIENT_ROOT_DIR}/core/controllers/serverLatencyController.cpp
+     ${CLIENT_ROOT_DIR}/core/repositories/secureServersRepository.cpp
+     ${CLIENT_ROOT_DIR}/core/repositories/secureAppSettingsRepository.cpp
+     ${CLIENT_ROOT_DIR}/ui/utils/qAutoStart.cpp
+@@ -148,6 +153,7 @@ set(SOURCES ${SOURCES}
+     ${CLIENT_ROOT_DIR}/core/protocols/vpnProtocol.cpp
+     ${CLIENT_ROOT_DIR}/core/utils/selfhosted/sshClient.cpp
+     ${CLIENT_ROOT_DIR}/core/utils/networkUtilities.cpp
++    ${CLIENT_ROOT_DIR}/core/utils/latencyProbe.cpp
+     ${CLIENT_ROOT_DIR}/core/utils/payloadSender.cpp
+     ${CLIENT_ROOT_DIR}/core/utils/serialization/outbound.cpp
+     ${CLIENT_ROOT_DIR}/core/utils/serialization/inbound.cpp
+@@ -175,8 +181,27 @@ set(SOURCES ${SOURCES}
+     ${CLIENT_ROOT_DIR}/mozilla/models/server.cpp
+     ${CLIENT_ROOT_DIR}/mozilla/shared/ipaddress.cpp
+     ${CLIENT_ROOT_DIR}/mozilla/shared/leakdetector.cpp
++    ${CLIENT_ROOT_DIR}/mozilla/pingsender.cpp
++    ${CLIENT_ROOT_DIR}/mozilla/pingsenderfactory.cpp
+ )
+ 
++if(LINUX OR ANDROID)
++    list(APPEND HEADERS ${CLIENT_ROOT_DIR}/platforms/linux/linuxpingsender.h)
++    list(APPEND SOURCES ${CLIENT_ROOT_DIR}/platforms/linux/linuxpingsender.cpp)
++elseif(APPLE)
++    list(APPEND HEADERS ${CLIENT_ROOT_DIR}/platforms/macos/macospingsender.h)
++    list(APPEND SOURCES ${CLIENT_ROOT_DIR}/platforms/macos/macospingsender.cpp)
++elseif(WIN32)
++    list(APPEND HEADERS
++        ${CLIENT_ROOT_DIR}/platforms/windows/windowspingsender.h
++        ${CLIENT_ROOT_DIR}/platforms/windows/windowsutils.h
++    )
++    list(APPEND SOURCES
++        ${CLIENT_ROOT_DIR}/platforms/windows/windowspingsender.cpp
++        ${CLIENT_ROOT_DIR}/platforms/windows/windowsutils.cpp
++    )
++endif()
++
+ if(NOT IOS AND NOT MACOS_NE)
+     set(SOURCES ${SOURCES}
+         ${CLIENT_ROOT_DIR}/platforms/ios/QRCodeReaderBase.cpp
+diff --git a/client/core/controllers/coreController.cpp b/client/core/controllers/coreController.cpp
+index 430d5e1..1bcea4c 100644
+--- a/client/core/controllers/coreController.cpp
++++ b/client/core/controllers/coreController.cpp
+@@ -180,6 +180,8 @@ void CoreController::initCoreControllers()
+     m_connectionController = new ConnectionController(m_serversRepository, m_appSettingsRepository, m_vpnConnection.get(), this);
+     m_settingsController = new SettingsController(m_serversRepository, m_appSettingsRepository, this);
+     m_localProxyController = new LocalProxyController(m_serversRepository, m_appSettingsRepository, m_subscriptionController, this);
++    m_serverLatencyController =
++            new ServerLatencyController(m_serversController, m_settingsController, m_connectionController, this);
+ }
+ 
+ void CoreController::initControllers()
+@@ -225,6 +227,10 @@ void CoreController::initControllers()
+     m_serversUiController = new ServersUiController(m_serversController, m_settingsController, m_serversModel, m_containersModel, m_defaultServerContainersModel, this);
+     setQmlContextProperty("ServersUiController", m_serversUiController);
+ 
++    m_serverLatencyUiController =
++            new ServerLatencyUiController(m_serverLatencyController, m_serversController, m_serversModel, this);
++    setQmlContextProperty("ServerLatencyController", m_serverLatencyUiController);
++
+     m_ipSplitTunnelingUiController = new IpSplitTunnelingUiController(m_ipSplitTunnelingController, m_ipSplitTunnelingModel, this);
+     setQmlContextProperty("IpSplitTunnelingController", m_ipSplitTunnelingUiController);
+ 
+diff --git a/client/core/controllers/coreController.h b/client/core/controllers/coreController.h
+index 61db899..ce55f1c 100644
+--- a/client/core/controllers/coreController.h
++++ b/client/core/controllers/coreController.h
+@@ -27,6 +27,7 @@
+ #include "ui/controllers/localProxyUiController.h"
+ #include "ui/controllers/logsUiController.h"
+ #include "ui/controllers/serversUiController.h"
++#include "ui/controllers/serverLatencyUiController.h"
+ #include "ui/controllers/ipSplitTunnelingUiController.h"
+ #include "ui/controllers/systemController.h"
+ #include "ui/controllers/languageUiController.h"
+@@ -48,6 +49,7 @@
+ #include "core/controllers/localProxyController.h"
+ #include "core/controllers/connectionController.h"
+ #include "core/controllers/updateController.h"
++#include "core/controllers/serverLatencyController.h"
+ 
+ #include "core/repositories/secureServersRepository.h"
+ #include "core/repositories/secureAppSettingsRepository.h"
+@@ -190,6 +192,7 @@ private:
+     AllowedDnsUiController* m_allowedDnsUiController;
+     LanguageUiController* m_languageUiController;
+     UpdateUiController* m_updateUiController;
++    ServerLatencyUiController *m_serverLatencyUiController;
+ 
+     SubscriptionUiController* m_subscriptionUiController;
+     ApiNewsUiController* m_apiNewsUiController;
+@@ -211,6 +214,7 @@ private:
+     ConnectionController* m_connectionController;
+     SettingsController* m_settingsController;
+     LocalProxyController* m_localProxyController;
++    ServerLatencyController *m_serverLatencyController;
+ 
+     ContainersModel* m_containersModel;
+     ContainersModel* m_defaultServerContainersModel;
+diff --git a/client/core/controllers/coreSignalHandlers.cpp b/client/core/controllers/coreSignalHandlers.cpp
+index 1eb54cc..32bcbde 100644
+--- a/client/core/controllers/coreSignalHandlers.cpp
++++ b/client/core/controllers/coreSignalHandlers.cpp
+@@ -93,6 +93,7 @@ void CoreSignalHandlers::initAllHandlers()
+     initNotificationHandler();
+     initUpdateFoundHandler();
+     initLocalProxyHandler();
++    initServerLatencyHandler();
+ }
+ 
+ void CoreSignalHandlers::initErrorMessagesHandler()
+@@ -563,3 +564,17 @@ void CoreSignalHandlers::initLocalProxyHandler()
+     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, m_coreController->m_localProxyController,
+             &LocalProxyController::disable);
+ }
++
++void CoreSignalHandlers::initServerLatencyHandler()
++{
++    connect(m_coreController->m_serversRepository, &SecureServersRepository::defaultServerChanged,
++            m_coreController->m_serverLatencyUiController, &ServerLatencyUiController::onDefaultServerChanged);
++    connect(m_coreController->m_connectionController, &ConnectionController::connectionStateChanged, this,
++            [this](Vpn::ConnectionState state) {
++                if (state == Vpn::ConnectionState::Connected || state == Vpn::ConnectionState::Disconnected) {
++                    m_coreController->m_serverLatencyUiController->testDefaultServer();
++                }
++            });
++    QTimer::singleShot(1000, m_coreController->m_serverLatencyUiController,
++                       &ServerLatencyUiController::testDefaultServer);
++}
+diff --git a/client/core/controllers/coreSignalHandlers.h b/client/core/controllers/coreSignalHandlers.h
+index 9295ff7..25f5ea4 100644
+--- a/client/core/controllers/coreSignalHandlers.h
++++ b/client/core/controllers/coreSignalHandlers.h
+@@ -45,6 +45,7 @@ private:
+     void initNotificationHandler();
+     void initUpdateFoundHandler();
+     void initLocalProxyHandler();
++    void initServerLatencyHandler();
+ 
+     CoreController* m_coreController;
+ };
+diff --git a/client/core/controllers/serverLatencyController.cpp b/client/core/controllers/serverLatencyController.cpp
+new file mode 100644
+index 0000000..5403822
+--- /dev/null
++++ b/client/core/controllers/serverLatencyController.cpp
+@@ -0,0 +1,128 @@
++#include "serverLatencyController.h"
++
++#include <QJsonDocument>
++
++#include "core/controllers/connectionController.h"
++#include "core/controllers/serversController.h"
++#include "core/controllers/settingsController.h"
++#include "core/protocols/protocolUtils.h"
++
++using namespace amnezia;
++
++ServerLatencyController::ServerLatencyController(ServersController *serversController,
++                                                 SettingsController *settingsController,
++                                                 ConnectionController *connectionController, QObject *parent)
++    : QObject(parent),
++      m_serversController(serversController),
++      m_settingsController(settingsController),
++      m_connectionController(connectionController)
++{
++}
++
++void ServerLatencyController::testAllServers()
++{
++    if (m_connectionController->isConnected()) {
++        testDefaultServer();
++        return;
++    }
++
++    for (const ServerDescription &server :
++         m_serversController->buildServerDescriptions(m_settingsController->isAmneziaDnsEnabled())) {
++        startProbe(server);
++    }
++}
++
++void ServerLatencyController::testDefaultServer()
++{
++    const QString defaultServerId = m_serversController->getDefaultServerId();
++    for (const ServerDescription &server :
++         m_serversController->buildServerDescriptions(m_settingsController->isAmneziaDnsEnabled())) {
++        if (server.serverId == defaultServerId) {
++            startProbe(server);
++            return;
++        }
++    }
++}
++
++bool ServerLatencyController::isTesting() const
++{
++    return !m_activeProbes.isEmpty();
++}
++
++bool ServerLatencyController::isTesting(const QString &serverId) const
++{
++    return m_activeProbes.contains(serverId);
++}
++
++std::optional<LatencyResult> ServerLatencyController::result(const QString &serverId) const
++{
++    const auto it = m_results.constFind(serverId);
++    if (it == m_results.constEnd()) {
++        return std::nullopt;
++    }
++    return it.value();
++}
++
++void ServerLatencyController::startProbe(const ServerDescription &server)
++{
++    if (m_activeProbes.contains(server.serverId)) {
++        return;
++    }
++
++    const std::optional<LatencyEndpoint> endpoint = endpointFor(server);
++    if (!endpoint.has_value()) {
++        return;
++    }
++
++    const bool wasTesting = isTesting();
++    auto *probe = new LatencyProbe(endpoint.value(), this);
++    m_activeProbes.insert(server.serverId, probe);
++
++    connect(probe, &LatencyProbe::finished, this, [this, probe, serverId = server.serverId](const LatencyResult &result) {
++        m_activeProbes.remove(serverId);
++        probe->deleteLater();
++        m_results.insert(serverId, result);
++        emit serverLatencyChanged(serverId);
++        if (!isTesting()) {
++            emit testingChanged();
++        }
++    });
++
++    if (!wasTesting) {
++        emit testingChanged();
++    }
++    emit serverLatencyChanged(server.serverId);
++    probe->start();
++}
++
++std::optional<LatencyEndpoint> ServerLatencyController::endpointFor(const ServerDescription &server) const
++{
++    if (server.hostName.isEmpty()) {
++        return std::nullopt;
++    }
++
++    const ContainerConfig containerConfig =
++            m_serversController->getContainerConfig(server.serverId, server.defaultContainer);
++
++    QString port = containerConfig.protocolConfig.port();
++    QString transportProto = containerConfig.protocolConfig.transportProto();
++
++    const OpenVpnProtocolConfig *openVpnConfig = containerConfig.getOpenVpnProtocolConfig();
++    if (port.isEmpty() && openVpnConfig && openVpnConfig->hasClientConfig()) {
++        port = openVpnConfig->clientConfig->remotePort();
++        transportProto = openVpnConfig->clientConfig->remoteTransportProto();
++    }
++
++    const XrayProtocolConfig *xrayConfig = containerConfig.getXrayProtocolConfig();
++    if (port.isEmpty() && xrayConfig && xrayConfig->hasClientConfig()) {
++        const QJsonObject nativeConfig =
++                QJsonDocument::fromJson(xrayConfig->clientConfig->nativeConfig.toUtf8()).object();
++        port = XrayClientConfig::serverPortFromNativeJson(nativeConfig);
++    }
++
++    const TransportProto transport = transportProto.isEmpty()
++            ? ProtocolUtils::defaultTransportProto(containerConfig.getProtocolType())
++            : ProtocolUtils::transportProtoFromString(transportProto);
++
++    return LatencyEndpoint { server.hostName, port.toUShort(), transport == TransportProto::Tcp };
++}
+diff --git a/client/core/controllers/serverLatencyController.h b/client/core/controllers/serverLatencyController.h
+new file mode 100644
+index 0000000..8b42baa
+--- /dev/null
++++ b/client/core/controllers/serverLatencyController.h
+@@ -0,0 +1,47 @@
++#ifndef SERVERLATENCYCONTROLLER_H
++#define SERVERLATENCYCONTROLLER_H
++
++#include <optional>
++
++#include <QHash>
++#include <QObject>
++
++#include "core/models/serverDescription.h"
++#include "core/utils/latencyProbe.h"
++
++class ConnectionController;
++class ServersController;
++class SettingsController;
++
++class ServerLatencyController : public QObject
++{
++    Q_OBJECT
++
++public:
++    explicit ServerLatencyController(ServersController *serversController, SettingsController *settingsController,
++                                     ConnectionController *connectionController, QObject *parent = nullptr);
++
++    void testAllServers();
++    void testDefaultServer();
++
++    bool isTesting() const;
++    bool isTesting(const QString &serverId) const;
++    std::optional<LatencyResult> result(const QString &serverId) const;
++
++signals:
++    void serverLatencyChanged(const QString &serverId);
++    void testingChanged();
++
++private:
++    void startProbe(const amnezia::ServerDescription &server);
++    std::optional<LatencyEndpoint> endpointFor(const amnezia::ServerDescription &server) const;
++
++    ServersController *m_serversController;
++    SettingsController *m_settingsController;
++    ConnectionController *m_connectionController;
++
++    QHash<QString, LatencyProbe *> m_activeProbes;
++    QHash<QString, LatencyResult> m_results;
++};
++
++#endif // SERVERLATENCYCONTROLLER_H
+diff --git a/client/core/models/protocols/openVpnProtocolConfig.cpp b/client/core/models/protocols/openVpnProtocolConfig.cpp
+index 46000ce..ed344ee 100644
+--- a/client/core/models/protocols/openVpnProtocolConfig.cpp
++++ b/client/core/models/protocols/openVpnProtocolConfig.cpp
+@@ -1,6 +1,7 @@
+ #include "openVpnProtocolConfig.h"
+ 
+ #include <QJsonDocument>
++#include <QRegularExpression>
+ 
+ #include "../../../core/utils/protocolEnum.h"
+ #include "../../../core/protocols/protocolUtils.h"
+@@ -116,6 +117,40 @@ OpenVpnClientConfig OpenVpnClientConfig::fromJson(const QJsonObject& json)
+     return config;
+ }
+ 
++QString OpenVpnClientConfig::remotePort() const
++{
++    static const QRegularExpression remotePortRegExp(QStringLiteral("^\\s*remote\\s+\\S+\\s+(\\d+)"),
++                                                     QRegularExpression::MultilineOption);
++    static const QRegularExpression portRegExp(QStringLiteral("^\\s*r?port\\s+(\\d+)"),
++                                               QRegularExpression::MultilineOption);
++
++    for (const QRegularExpression *regExp : { &remotePortRegExp, &portRegExp }) {
++        const QRegularExpressionMatch match = regExp->match(nativeConfig);
++        if (match.hasMatch()) {
++            return match.captured(1);
++        }
++    }
++    return protocols::openvpn::defaultPort;
++}
++
++QString OpenVpnClientConfig::remoteTransportProto() const
++{
++    static const QRegularExpression remoteProtoRegExp(QStringLiteral("^\\s*remote\\s+\\S+\\s+\\d+\\s+(udp|tcp)"),
++                                                      QRegularExpression::MultilineOption
++                                                              | QRegularExpression::CaseInsensitiveOption);
++    static const QRegularExpression protoRegExp(QStringLiteral("^\\s*proto\\s+(udp|tcp)"),
++                                                QRegularExpression::MultilineOption
++                                                        | QRegularExpression::CaseInsensitiveOption);
++
++    for (const QRegularExpression *regExp : { &remoteProtoRegExp, &protoRegExp }) {
++        const QRegularExpressionMatch match = regExp->match(nativeConfig);
++        if (match.hasMatch()) {
++            return match.captured(1).toLower();
++        }
++    }
++    return protocols::openvpn::defaultTransportProto;
++}
++
+ QJsonObject OpenVpnProtocolConfig::toJson() const
+ {
+     QJsonObject obj = serverConfig.toJson();
+diff --git a/client/core/models/protocols/openVpnProtocolConfig.h b/client/core/models/protocols/openVpnProtocolConfig.h
+index 8c126fb..02358cd 100644
+--- a/client/core/models/protocols/openVpnProtocolConfig.h
++++ b/client/core/models/protocols/openVpnProtocolConfig.h
+@@ -35,6 +35,9 @@ struct OpenVpnClientConfig {
+     
+     QJsonObject toJson() const;
+     static OpenVpnClientConfig fromJson(const QJsonObject& json);
++
++    QString remotePort() const;
++    QString remoteTransportProto() const;
+ };
+ 
+ struct OpenVpnProtocolConfig {
+diff --git a/client/core/models/protocols/xrayProtocolConfig.cpp b/client/core/models/protocols/xrayProtocolConfig.cpp
+index bf9c551..776ebf3 100644
+--- a/client/core/models/protocols/xrayProtocolConfig.cpp
++++ b/client/core/models/protocols/xrayProtocolConfig.cpp
+@@ -1431,6 +1431,20 @@ QString XrayClientConfig::localPortFromNativeJson(const QJsonObject &nativeJson)
+     return jsonPortToString(inbound.value(px::port));
+ }
+ 
++QString XrayClientConfig::serverPortFromNativeJson(const QJsonObject &nativeJson)
++{
++    namespace px = protocols::xray;
++
++    const QJsonObject settings = entryOutbound(nativeJson.value(px::outbounds).toArray()).value(px::settings).toObject();
++    for (const char *serverEntriesKey : { px::vnext, px::servers }) {
++        const QJsonArray serverEntries = settings.value(serverEntriesKey).toArray();
++        if (!serverEntries.isEmpty()) {
++            return jsonPortToString(serverEntries[0].toObject().value(px::port));
++        }
++    }
++    return { };
++}
++
+ QJsonObject XrayProtocolConfig::toJson() const
+ {
+     QJsonObject obj = serverConfig.toJson();
+diff --git a/client/core/models/protocols/xrayProtocolConfig.h b/client/core/models/protocols/xrayProtocolConfig.h
+index e49e0b6..638fd33 100644
+--- a/client/core/models/protocols/xrayProtocolConfig.h
++++ b/client/core/models/protocols/xrayProtocolConfig.h
+@@ -215,6 +215,7 @@ struct XrayClientConfig {
+ 
+     static QString idFromNativeJson(const QJsonObject &nativeJson);
+     static QString localPortFromNativeJson(const QJsonObject &nativeJson);
++    static QString serverPortFromNativeJson(const QJsonObject &nativeJson);
+ };
+ 
+ // ── Top-level protocol config ──────────────────────────────────────────────────
+diff --git a/client/core/utils/latencyProbe.cpp b/client/core/utils/latencyProbe.cpp
+new file mode 100644
+index 0000000..3c1b7e2
+--- /dev/null
++++ b/client/core/utils/latencyProbe.cpp
+@@ -0,0 +1,385 @@
++#include "latencyProbe.h"
++
++#include <algorithm>
++#include <cstring>
++#include <numeric>
++
++#include <QElapsedTimer>
++#include <QHostInfo>
++#include <QSocketNotifier>
++#include <QTimer>
++
++#include "pingsender.h"
++#include "pingsenderfactory.h"
++
++#ifdef Q_OS_WIN
++    #include <winsock2.h>
++
++    #include <mstcpip.h>
++    #include <ws2tcpip.h>
++#else
++    #include <arpa/inet.h>
++    #include <cerrno>
++    #include <fcntl.h>
++    #include <netinet/in.h>
++    #include <sys/socket.h>
++    #include <unistd.h>
++#endif
++
++using ServerQuality::Quality;
++
++namespace
++{
++    constexpr int excellentLatencyMs = 80;
++    constexpr int goodLatencyMs = 150;
++    constexpr int fairLatencyMs = 300;
++    constexpr int unstableJitterMs = 50;
++
++#ifdef Q_OS_WIN
++    using NativeSocket = SOCKET;
++    constexpr NativeSocket invalidNativeSocket = INVALID_SOCKET;
++    constexpr int handshakeInProgress = WSAEWOULDBLOCK;
++    constexpr int handshakeRefused = WSAECONNREFUSED;
++#else
++    using NativeSocket = int;
++    constexpr NativeSocket invalidNativeSocket = -1;
++    constexpr int handshakeInProgress = EINPROGRESS;
++    constexpr int handshakeRefused = ECONNREFUSED;
++#endif
++
++    bool icmpSocketsUnavailable = false;
++
++    int lastSocketError()
++    {
++#ifdef Q_OS_WIN
++        return WSAGetLastError();
++#else
++        return errno;
++#endif
++    }
++
++    void closeNativeSocket(NativeSocket socket)
++    {
++#ifdef Q_OS_WIN
++        closesocket(socket);
++#else
++        close(socket);
++#endif
++    }
++
++    int startTcpHandshake(NativeSocket &socket, const QHostAddress &address, quint16 port)
++    {
++        sockaddr_storage target { };
++        socklen_t targetSize = 0;
++        if (address.protocol() == QAbstractSocket::IPv6Protocol) {
++            auto &ipv6 = reinterpret_cast<sockaddr_in6 &>(target);
++            ipv6.sin6_family = AF_INET6;
++            ipv6.sin6_port = htons(port);
++            const Q_IPV6ADDR bytes = address.toIPv6Address();
++            std::memcpy(&ipv6.sin6_addr, bytes.c, sizeof(bytes.c));
++            targetSize = sizeof(ipv6);
++        } else {
++            auto &ipv4 = reinterpret_cast<sockaddr_in &>(target);
++            ipv4.sin_family = AF_INET;
++            ipv4.sin_port = htons(port);
++            ipv4.sin_addr.s_addr = htonl(address.toIPv4Address());
++            targetSize = sizeof(ipv4);
++        }
++
++#ifdef Q_OS_WIN
++        static const int winsockStatus = [] {
++            WSADATA winsockData;
++            return WSAStartup(MAKEWORD(2, 2), &winsockData);
++        }();
++        Q_UNUSED(winsockStatus)
++#endif
++        socket = ::socket(target.ss_family, SOCK_STREAM, IPPROTO_TCP);
++        if (socket == invalidNativeSocket) {
++            return lastSocketError();
++        }
++#ifdef Q_OS_WIN
++        u_long nonBlocking = 1;
++        ioctlsocket(socket, FIONBIO, &nonBlocking);
++        // Windows retransmits the SYN after a refusal, which hides a closed port's answer for about a second.
++        TCP_INITIAL_RTO_PARAMETERS initialRto = { TCP_INITIAL_RTO_UNSPECIFIED_RTT,
++                                                  TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS };
++        DWORD bytesReturned = 0;
++        WSAIoctl(socket, SIO_TCP_INITIAL_RTO, &initialRto, sizeof(initialRto), nullptr, 0, &bytesReturned, nullptr,
++                 nullptr);
++#else
++        fcntl(socket, F_SETFL, fcntl(socket, F_GETFL) | O_NONBLOCK);
++#endif
++        if (::connect(socket, reinterpret_cast<const sockaddr *>(&target), targetSize) == 0) {
++            return 0;
++        }
++        return lastSocketError();
++    }
++
++    int finishedHandshakeError(NativeSocket socket)
++    {
++        int error = 0;
++        socklen_t errorSize = sizeof(error);
++        if (getsockopt(socket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&error), &errorSize) != 0) {
++            return lastSocketError();
++        }
++        return error;
++    }
++
++    quint16 nextIcmpSequence()
++    {
++        static quint16 sequence = 0;
++        return ++sequence;
++    }
++
++    Quality qualityForLatency(int latencyMs)
++    {
++        if (latencyMs < excellentLatencyMs) {
++            return Quality::Excellent;
++        }
++        if (latencyMs < goodLatencyMs) {
++            return Quality::Good;
++        }
++        if (latencyMs < fairLatencyMs) {
++            return Quality::Fair;
++        }
++        return Quality::Poor;
++    }
++
++    Quality oneStepWorse(Quality quality)
++    {
++        switch (quality) {
++        case Quality::Excellent: return Quality::Good;
++        case Quality::Good: return Quality::Fair;
++        default: return Quality::Poor;
++        }
++    }
++}
++
++LatencyResult LatencyResult::fromReplyTimes(const QVector<int> &replyTimesMs, int sentCount)
++{
++    LatencyResult result;
++    if (replyTimesMs.isEmpty()) {
++        result.lossPercent = 100;
++        result.quality = Quality::Unreachable;
++        return result;
++    }
++
++    const int totalMs = std::accumulate(replyTimesMs.cbegin(), replyTimesMs.cend(), 0);
++    result.latencyMs = qRound(static_cast<double>(totalMs) / replyTimesMs.size());
++
++    int jitterTotalMs = 0;
++    for (int i = 1; i < replyTimesMs.size(); ++i) {
++        jitterTotalMs += qAbs(replyTimesMs.at(i) - replyTimesMs.at(i - 1));
++    }
++    if (replyTimesMs.size() > 1) {
++        result.jitterMs = qRound(static_cast<double>(jitterTotalMs) / (replyTimesMs.size() - 1));
++    }
++    result.lossPercent = qRound(100.0 * (sentCount - replyTimesMs.size()) / sentCount);
++
++    result.quality = qualityForLatency(result.latencyMs);
++    if (result.lossPercent > 0 || result.jitterMs > unstableJitterMs) {
++        result.quality = oneStepWorse(result.quality);
++    }
++    return result;
++}
++
++LatencyProbe::LatencyProbe(const LatencyEndpoint &endpoint, QObject *parent) : QObject(parent), m_endpoint(endpoint)
++{
++}
++
++void LatencyProbe::start()
++{
++    const QHostAddress address(m_endpoint.host);
++    if (!address.isNull()) {
++        startWithAddress(address);
++        return;
++    }
++    QHostInfo::lookupHost(m_endpoint.host, this, &LatencyProbe::onHostResolved);
++}
++
++void LatencyProbe::onHostResolved(const QHostInfo &hostInfo)
++{
++    const QList<QHostAddress> addresses = hostInfo.addresses();
++    const auto ipv4Address = std::find_if(addresses.cbegin(), addresses.cend(), [](const QHostAddress &address) {
++        return address.protocol() == QAbstractSocket::IPv4Protocol;
++    });
++
++    if (ipv4Address != addresses.cend()) {
++        startWithAddress(*ipv4Address);
++    } else if (!addresses.isEmpty()) {
++        startWithAddress(addresses.first());
++    } else {
++        finish(LatencyResult::fromReplyTimes({ }, samplesPerProbe));
++    }
++}
++
++void LatencyProbe::startWithAddress(const QHostAddress &address)
++{
++    m_address = address;
++    const bool canUseIcmp = address.protocol() == QAbstractSocket::IPv4Protocol && !icmpSocketsUnavailable;
++    const bool canUseTcp = m_endpoint.port != 0;
++
++    if (canUseTcp && (m_endpoint.isTcpTransport || !canUseIcmp)) {
++        startSampling(Method::Tcp);
++    } else if (canUseIcmp) {
++        startSampling(Method::Icmp);
++    } else {
++        finish(LatencyResult { });
++    }
++}
++
++void LatencyProbe::startSampling(Method method)
++{
++    ++m_phase;
++    m_method = method;
++    m_replyTimesMs.clear();
++    m_startedSamples = 0;
++    m_completedSamples = 0;
++    sendNextSample();
++}
++
++void LatencyProbe::sendNextSample()
++{
++    const int phase = m_phase;
++    ++m_startedSamples;
++
++    if (m_method == Method::Icmp) {
++        sendIcmpSample();
++    } else {
++        sendTcpSample();
++    }
++
++    if (phase == m_phase && m_startedSamples < samplesPerProbe) {
++        QTimer::singleShot(sampleIntervalMs, this, [this, phase]() {
++            if (phase == m_phase) {
++                sendNextSample();
++            }
++        });
++    }
++}
++
++void LatencyProbe::sendIcmpSample()
++{
++    const int phase = m_phase;
++    PingSender *sender = PingSenderFactory::create(QHostAddress(), this);
++    if (!sender->isValid()) {
++        icmpSocketsUnavailable = true;
++        sender->deleteLater();
++        onIcmpUnavailable(phase);
++        return;
++    }
++
++    auto *timeoutTimer = new QTimer(sender);
++    timeoutTimer->setSingleShot(true);
++    const quint16 sequence = nextIcmpSequence();
++    QElapsedTimer elapsedTimer;
++    elapsedTimer.start();
++
++    const auto releaseSender = [this, sender, timeoutTimer]() {
++        timeoutTimer->stop();
++        sender->disconnect(this);
++        sender->deleteLater();
++    };
++
++    connect(sender, &PingSender::recvPing, this,
++            [this, phase, sequence, elapsedTimer, releaseSender](quint16 replySequence) {
++                if (replySequence != sequence) {
++                    return;
++                }
++                releaseSender();
++                completeSample(phase, static_cast<int>(elapsedTimer.elapsed()));
++            });
++    connect(sender, &PingSender::criticalPingError, this, [this, phase, releaseSender]() {
++        releaseSender();
++        onIcmpUnavailable(phase);
++    });
++    connect(timeoutTimer, &QTimer::timeout, this, [this, phase, releaseSender]() {
++        releaseSender();
++        completeSample(phase, std::nullopt);
++    });
++
++    timeoutTimer->start(sampleTimeoutMs);
++    sender->sendPing(m_address, sequence);
++}
++
++void LatencyProbe::sendTcpSample()
++{
++    const int phase = m_phase;
++    QElapsedTimer elapsedTimer;
++    elapsedTimer.start();
++
++    const auto replyTimeFor = [this, elapsedTimer](int handshakeError) -> std::optional<int> {
++        const bool hostAnswered =
++                handshakeError == 0 || (handshakeError == handshakeRefused && !m_endpoint.isTcpTransport);
++        return hostAnswered ? std::optional<int>(static_cast<int>(elapsedTimer.elapsed())) : std::nullopt;
++    };
++
++    NativeSocket socket = invalidNativeSocket;
++    const int startError = startTcpHandshake(socket, m_address, m_endpoint.port);
++    if (startError != handshakeInProgress) {
++        if (socket != invalidNativeSocket) {
++            closeNativeSocket(socket);
++        }
++        completeSample(phase, replyTimeFor(startError));
++        return;
++    }
++
++    auto *notifier = new QSocketNotifier(static_cast<qintptr>(socket), QSocketNotifier::Write, this);
++    connect(notifier, &QObject::destroyed, [socket]() { closeNativeSocket(socket); });
++    auto *timeoutTimer = new QTimer(notifier);
++    timeoutTimer->setSingleShot(true);
++
++    const auto completeWith = [this, phase, notifier, timeoutTimer](std::optional<int> replyTimeMs) {
++        timeoutTimer->stop();
++        notifier->setEnabled(false);
++        notifier->deleteLater();
++        completeSample(phase, replyTimeMs);
++    };
++
++    connect(notifier, &QSocketNotifier::activated, this,
++            [socket, replyTimeFor, completeWith]() { completeWith(replyTimeFor(finishedHandshakeError(socket))); });
++    connect(timeoutTimer, &QTimer::timeout, this, [completeWith]() { completeWith(std::nullopt); });
++
++    timeoutTimer->start(sampleTimeoutMs);
++}
++
++void LatencyProbe::completeSample(int phase, std::optional<int> replyTimeMs)
++{
++    if (phase != m_phase) {
++        return;
++    }
++    if (replyTimeMs.has_value()) {
++        m_replyTimesMs.append(replyTimeMs.value());
++    }
++    if (++m_completedSamples < samplesPerProbe) {
++        return;
++    }
++
++    if (m_method == Method::Icmp && m_replyTimesMs.isEmpty() && m_endpoint.port != 0) {
++        startSampling(Method::Tcp);
++        return;
++    }
++    LatencyResult result = LatencyResult::fromReplyTimes(m_replyTimesMs, samplesPerProbe);
++    if (m_replyTimesMs.isEmpty() && !m_endpoint.isTcpTransport) {
++        result.quality = Quality::NoReply;
++    }
++    finish(result);
++}
++
++void LatencyProbe::onIcmpUnavailable(int phase)
++{
++    if (phase != m_phase) {
++        return;
++    }
++    if (m_endpoint.port != 0) {
++        startSampling(Method::Tcp);
++    } else {
++        finish(LatencyResult { });
++    }
++}
++
++void LatencyProbe::finish(const LatencyResult &result)
++{
++    ++m_phase;
++    emit finished(result);
++}
+diff --git a/client/core/utils/latencyProbe.h b/client/core/utils/latencyProbe.h
+new file mode 100644
+index 0000000..c6502f6
+--- /dev/null
++++ b/client/core/utils/latencyProbe.h
+@@ -0,0 +1,85 @@
++#ifndef LATENCYPROBE_H
++#define LATENCYPROBE_H
++
++#include <optional>
++
++#include <QHostAddress>
++#include <QObject>
++#include <QVector>
++
++class QHostInfo;
++
++namespace ServerQuality
++{
++    Q_NAMESPACE
++    enum class Quality {
++        Unknown = 0,
++        Excellent,
++        Good,
++        Fair,
++        Poor,
++        Unreachable,
++        NoReply
++    };
++    Q_ENUM_NS(Quality)
++}
++
++struct LatencyEndpoint
++{
++    QString host;
++    quint16 port = 0;
++    bool isTcpTransport = false;
++};
++
++struct LatencyResult
++{
++    int latencyMs = -1;
++    int jitterMs = 0;
++    int lossPercent = 0;
++    ServerQuality::Quality quality = ServerQuality::Quality::Unknown;
++
++    static LatencyResult fromReplyTimes(const QVector<int> &replyTimesMs, int sentCount);
++};
++
++class LatencyProbe : public QObject
++{
++    Q_OBJECT
++
++public:
++    static constexpr int samplesPerProbe = 4;
++    static constexpr int sampleIntervalMs = 200;
++    static constexpr int sampleTimeoutMs = 1500;
++
++    explicit LatencyProbe(const LatencyEndpoint &endpoint, QObject *parent = nullptr);
++
++    void start();
++
++signals:
++    void finished(const LatencyResult &result);
++
++private:
++    enum class Method {
++        Icmp,
++        Tcp
++    };
++
++    void onHostResolved(const QHostInfo &hostInfo);
++    void startWithAddress(const QHostAddress &address);
++    void startSampling(Method method);
++    void sendNextSample();
++    void sendIcmpSample();
++    void sendTcpSample();
++    void completeSample(int phase, std::optional<int> replyTimeMs);
++    void onIcmpUnavailable(int phase);
++    void finish(const LatencyResult &result);
++
++    LatencyEndpoint m_endpoint;
++    QHostAddress m_address;
++    Method m_method = Method::Icmp;
++    QVector<int> m_replyTimesMs;
++    int m_startedSamples = 0;
++    int m_completedSamples = 0;
++    int m_phase = 0;
++};
++
++#endif // LATENCYPROBE_H
+diff --git a/client/platforms/windows/windowspingsender.cpp b/client/platforms/windows/windowspingsender.cpp
+index a39ac2d..b54b311 100644
+--- a/client/platforms/windows/windowspingsender.cpp
++++ b/client/platforms/windows/windowspingsender.cpp
+@@ -55,7 +55,7 @@ struct ICMP_ECHO_REPLY_BUFFER {
+   MZ_ICMP_ECHO_REPLY reply;
+   std::array<uint8_t, reply_padding> padding;
+   quint16 payload;
+-  std::array<char8_t, ICMP_ERR_SIZE> icmp_error;
++  std::array<uint8_t, ICMP_ERR_SIZE> icmp_error;
+   IO_STATUS_BLOCK status;
+ };
+ #pragma pack(pop)
+diff --git a/client/tests/CMakeLists.txt b/client/tests/CMakeLists.txt
+index e2cebfc..68df0fa 100644
+--- a/client/tests/CMakeLists.txt
++++ b/client/tests/CMakeLists.txt
+@@ -54,6 +54,11 @@ target_link_libraries(test_common PUBLIC
+ 
+ target_compile_definitions(test_common PUBLIC AMNEZIA_BUILD_TESTS)
+ 
++# MZ_<platform> is private to the app target, but the ping sender factory needs it
++set_source_files_properties(${CLIENT_ROOT_DIR}/mozilla/pingsenderfactory.cpp
++    PROPERTIES COMPILE_DEFINITIONS "MZ_$<UPPER_CASE:${MZ_PLATFORM_NAME}>"
++)
++
+ target_include_directories(test_common PUBLIC
+     ${CMAKE_CURRENT_SOURCE_DIR}
+     ${CMAKE_CURRENT_SOURCE_DIR}/..
+diff --git a/client/translations/amneziavpn_ru_RU.ts b/client/translations/amneziavpn_ru_RU.ts
+index 2aee504..8b9488e 100644
+--- a/client/translations/amneziavpn_ru_RU.ts
++++ b/client/translations/amneziavpn_ru_RU.ts
+@@ -850,6 +850,10 @@ Already installed containers were found on the server. All installed containers
+ </context>
+ <context>
+     <name>PageHome</name>
++    <message>
++        <source>Test server ping</source>
++        <translation>Обновить задержку серверов</translation>
++    </message>
+     <message>
+         <location filename="../ui/qml/Pages2/PageHome.qml" line="121"/>
+         <source>Logging enabled</source>
+@@ -7669,4 +7673,15 @@ Remove the server from the app to continue.</source>
+         <translation>Невозможно удалить сервер во время активного соединения</translation>
+     </message>
+ </context>
++<context>
++    <name>ServerLatencyBadge</name>
++    <message>
++        <source>%1 ms</source>
++        <translation>%1 мс</translation>
++    </message>
++    <message>
++        <source>No reply</source>
++        <translation>Нет ответа</translation>
++    </message>
++</context>
+ </TS>
+diff --git a/client/ui/controllers/serverLatencyUiController.cpp b/client/ui/controllers/serverLatencyUiController.cpp
+new file mode 100644
+index 0000000..055c0cd
+--- /dev/null
++++ b/client/ui/controllers/serverLatencyUiController.cpp
+@@ -0,0 +1,76 @@
++#include "serverLatencyUiController.h"
++
++#include <QQmlEngine>
++
++#include "core/controllers/serversController.h"
++#include "ui/models/serversModel.h"
++
++ServerLatencyUiController::ServerLatencyUiController(ServerLatencyController *latencyController,
++                                                     ServersController *serversController, ServersModel *serversModel,
++                                                     QObject *parent)
++    : QObject(parent),
++      m_latencyController(latencyController),
++      m_serversController(serversController),
++      m_serversModel(serversModel)
++{
++    connect(m_latencyController, &ServerLatencyController::testingChanged, this,
++            &ServerLatencyUiController::testingChanged);
++    connect(m_latencyController, &ServerLatencyController::serverLatencyChanged, this,
++            &ServerLatencyUiController::onServerLatencyChanged);
++}
++
++void ServerLatencyUiController::declareQmlServerQualityEnum()
++{
++    qmlRegisterUncreatableMetaObject(ServerQuality::staticMetaObject, "ServerQuality", 1, 0, "ServerQuality",
++                                     "Error: only enums");
++}
++
++bool ServerLatencyUiController::isTesting() const
++{
++    return m_latencyController->isTesting();
++}
++
++int ServerLatencyUiController::defaultServerLatencyMs() const
++{
++    return defaultServerResult().latencyMs;
++}
++
++int ServerLatencyUiController::defaultServerQuality() const
++{
++    return static_cast<int>(defaultServerResult().quality);
++}
++
++bool ServerLatencyUiController::isDefaultServerTesting() const
++{
++    return m_latencyController->isTesting(m_serversController->getDefaultServerId());
++}
++
++void ServerLatencyUiController::testAllServers()
++{
++    m_latencyController->testAllServers();
++}
++
++void ServerLatencyUiController::testDefaultServer()
++{
++    m_latencyController->testDefaultServer();
++}
++
++void ServerLatencyUiController::onDefaultServerChanged()
++{
++    emit defaultServerLatencyChanged();
++    testDefaultServer();
++}
++
++void ServerLatencyUiController::onServerLatencyChanged(const QString &serverId)
++{
++    m_serversModel->setServerLatency(serverId, m_latencyController->result(serverId).value_or(LatencyResult { }),
++                                     m_latencyController->isTesting(serverId));
++    if (serverId == m_serversController->getDefaultServerId()) {
++        emit defaultServerLatencyChanged();
++    }
++}
++
++LatencyResult ServerLatencyUiController::defaultServerResult() const
++{
++    return m_latencyController->result(m_serversController->getDefaultServerId()).value_or(LatencyResult { });
++}
+diff --git a/client/ui/controllers/serverLatencyUiController.h b/client/ui/controllers/serverLatencyUiController.h
+new file mode 100644
+index 0000000..bfec29b
+--- /dev/null
++++ b/client/ui/controllers/serverLatencyUiController.h
+@@ -0,0 +1,49 @@
++#ifndef SERVERLATENCYUICONTROLLER_H
++#define SERVERLATENCYUICONTROLLER_H
++
++#include <QObject>
++
++#include "core/controllers/serverLatencyController.h"
++
++class ServersController;
++class ServersModel;
++
++class ServerLatencyUiController : public QObject
++{
++    Q_OBJECT
++
++    Q_PROPERTY(bool isTesting READ isTesting NOTIFY testingChanged)
++    Q_PROPERTY(int defaultServerLatencyMs READ defaultServerLatencyMs NOTIFY defaultServerLatencyChanged)
++    Q_PROPERTY(int defaultServerQuality READ defaultServerQuality NOTIFY defaultServerLatencyChanged)
++    Q_PROPERTY(bool isDefaultServerTesting READ isDefaultServerTesting NOTIFY defaultServerLatencyChanged)
++
++public:
++    explicit ServerLatencyUiController(ServerLatencyController *latencyController, ServersController *serversController,
++                                       ServersModel *serversModel, QObject *parent = nullptr);
++
++    static void declareQmlServerQualityEnum();
++
++    bool isTesting() const;
++    int defaultServerLatencyMs() const;
++    int defaultServerQuality() const;
++    bool isDefaultServerTesting() const;
++
++public slots:
++    void testAllServers();
++    void testDefaultServer();
++    void onDefaultServerChanged();
++
++signals:
++    void testingChanged();
++    void defaultServerLatencyChanged();
++
++private:
++    void onServerLatencyChanged(const QString &serverId);
++    LatencyResult defaultServerResult() const;
++
++    ServerLatencyController *m_latencyController;
++    ServersController *m_serversController;
++    ServersModel *m_serversModel;
++};
++
++#endif // SERVERLATENCYUICONTROLLER_H
+diff --git a/client/ui/models/serversModel.cpp b/client/ui/models/serversModel.cpp
+index 7fe6327..a3417f3 100644
+--- a/client/ui/models/serversModel.cpp
++++ b/client/ui/models/serversModel.cpp
+@@ -81,6 +81,9 @@ QVariant ServersModel::data(const QModelIndex &index, int role) const
+         return row.isSubscriptionExpired;
+     case IsSubscriptionExpiringSoonRole:
+         return row.isSubscriptionExpiringSoon;
++    case LatencyMsRole: return m_latencyResults.value(row.serverId).latencyMs;
++    case LatencyQualityRole: return static_cast<int>(m_latencyResults.value(row.serverId).quality);
++    case IsLatencyTestingRole: return m_latencyTestingServerIds.contains(row.serverId);
+     }
+ 
+     return QVariant();
+@@ -120,6 +123,21 @@ void ServersModel::setDefaultServerId(const QString &serverId)
+     }
+ }
+ 
++void ServersModel::setServerLatency(const QString &serverId, const LatencyResult &result, bool isTesting)
++{
++    m_latencyResults.insert(serverId, result);
++    if (isTesting) {
++        m_latencyTestingServerIds.insert(serverId);
++    } else {
++        m_latencyTestingServerIds.remove(serverId);
++    }
++
++    const int row = rowForServerId(m_descriptions, serverId);
++    if (row >= 0) {
++        emit dataChanged(index(row), index(row), { LatencyMsRole, LatencyQualityRole, IsLatencyTestingRole });
++    }
++}
++
+ QHash<int, QByteArray> ServersModel::roleNames() const
+ {
+     QHash<int, QByteArray> roles;
+@@ -142,6 +160,10 @@ QHash<int, QByteArray> ServersModel::roleNames() const
+     roles[IsSubscriptionExpiredRole] = "isSubscriptionExpired";
+     roles[IsSubscriptionExpiringSoonRole] = "isSubscriptionExpiringSoon";
+ 
++    roles[LatencyMsRole] = "latencyMs";
++    roles[LatencyQualityRole] = "latencyQuality";
++    roles[IsLatencyTestingRole] = "isLatencyTesting";
++
+     return roles;
+ }
+ 
+diff --git a/client/ui/models/serversModel.h b/client/ui/models/serversModel.h
+index 39e2990..3bf05b6 100644
+--- a/client/ui/models/serversModel.h
++++ b/client/ui/models/serversModel.h
+@@ -2,10 +2,13 @@
+ #define SERVERSMODEL_H
+ 
+ #include <QAbstractListModel>
++#include <QHash>
++#include <QSet>
+ #include <QVector>
+ 
+ #include "core/utils/selfhosted/sshSession.h"
+ #include "core/models/serverDescription.h"
++#include "core/utils/latencyProbe.h"
+ 
+ class ServersModel : public QAbstractListModel
+ {
+@@ -30,6 +33,10 @@ public:
+         IsServerFromGatewayApiRole,
+         IsSubscriptionExpiredRole,
+         IsSubscriptionExpiringSoonRole,
++
++        LatencyMsRole,
++        LatencyQualityRole,
++        IsLatencyTestingRole,
+     };
+ 
+     ServersModel(QObject *parent = nullptr);
+@@ -42,6 +49,7 @@ public slots:
+     void updateModel(const QVector<amnezia::ServerDescription> &descriptions,
+                      const QString &defaultServerId);
+     void setDefaultServerId(const QString &serverId);
++    void setServerLatency(const QString &serverId, const LatencyResult &result, bool isTesting);
+ 
+ protected:
+     QHash<int, QByteArray> roleNames() const override;
+@@ -52,6 +60,9 @@ private:
+     QVector<amnezia::ServerDescription> m_descriptions;
+ 
+     QString m_defaultServerId;
++
++    QHash<QString, LatencyResult> m_latencyResults;
++    QSet<QString> m_latencyTestingServerIds;
+ };
+ 
+ #endif // SERVERSMODEL_H
+diff --git a/client/ui/qml/Components/ServerLatencyBadge.qml b/client/ui/qml/Components/ServerLatencyBadge.qml
+new file mode 100644
+index 0000000..17e7fa1
+--- /dev/null
++++ b/client/ui/qml/Components/ServerLatencyBadge.qml
+@@ -0,0 +1,28 @@
++import QtQuick
++import QtQuick.Layouts
++
++import ServerQuality 1.0
++import "../Controls2"
++import "../Controls2/TextTypes"
++
++RowLayout {
++    id: root
++
++    property int latencyMs: -1
++    property int quality: ServerQuality.Unknown
++    property bool testing: false
++
++    visible: testing || quality !== ServerQuality.Unknown
++
++    SpinnerType {
++        visible: root.testing
++        running: visible
++        size: SpinnerType.Small
++    }
++
++    CaptionTextType {
++        visible: !root.testing
++        text: root.latencyMs >= 0 ? qsTr("%1 ms").arg(root.latencyMs) : qsTr("No reply")
++        wrapMode: Text.NoWrap
++    }
++}
+diff --git a/client/ui/qml/Components/ServerListItem.qml b/client/ui/qml/Components/ServerListItem.qml
+index fef4a3a..166fb6c 100644
+--- a/client/ui/qml/Components/ServerListItem.qml
++++ b/client/ui/qml/Components/ServerListItem.qml
+@@ -3,6 +3,7 @@ import QtQuick.Controls
+ import QtQuick.Controls.impl
+ import QtQuick.Layouts
+ 
++import ServerQuality 1.0
+ import Style 1.0
+ 
+ import "../Controls2"
+@@ -11,9 +12,20 @@ RadioItemType {
+     id: root
+ 
+     property bool showWarning: false
++    property int latencyMs: -1
++    property int latencyQuality: ServerQuality.Unknown
++    property bool latencyTesting: false
+ 
+     signal settingsRequested()
+ 
++    ServerLatencyBadge {
++        Layout.leftMargin: 8
++
++        latencyMs: root.latencyMs
++        quality: root.latencyQuality
++        testing: root.latencyTesting
++    }
++
+     Item {
+         Layout.preferredWidth: 48
+         Layout.preferredHeight: 48
+diff --git a/client/ui/qml/Components/ServersListView.qml b/client/ui/qml/Components/ServersListView.qml
+index 6a2172f..21eb4a7 100644
+--- a/client/ui/qml/Components/ServersListView.qml
++++ b/client/ui/qml/Components/ServersListView.qml
+@@ -54,6 +54,9 @@ ListViewType {
+                        ? (isSubscriptionExpired ? AmneziaStyle.color.statusDestructive : AmneziaStyle.color.statusWarning)
+                        : AmneziaStyle.color.textTertiary
+         showWarning: ServersUiController.serverHasOutdatedAwgContainer(serverId)
++        latencyMs: model.latencyMs
++        latencyQuality: model.latencyQuality
++        latencyTesting: model.isLatencyTesting
+         showSeparator: index < root.count - 1
+ 
+         checked: serverId === ServersUiController.defaultServerId
+diff --git a/client/ui/qml/Pages2/PageHome.qml b/client/ui/qml/Pages2/PageHome.qml
+index 868acb4..a43ee75 100644
+--- a/client/ui/qml/Pages2/PageHome.qml
++++ b/client/ui/qml/Pages2/PageHome.qml
+@@ -159,6 +159,14 @@ PageType {
+                 }
+             }
+ 
++            ServerLatencyBadge {
++                latencyMs: ServerLatencyController.defaultServerLatencyMs
++                quality: ServerLatencyController.defaultServerQuality
++                testing: ServerLatencyController.isDefaultServerTesting
++                Layout.alignment: Qt.AlignHCenter
++                Layout.bottomMargin: 16
++            }
++
+             HomeInfoButton {
+                 id: splitTunnelingButton
+ 
+@@ -296,6 +304,8 @@ PageType {
+         grabberTopMargin: 16
+         expandedHeight: Qt.platform.os !== "ios" ? root.height * 0.9 : screen.height * 0.77
+ 
++        onAboutToShow: ServerLatencyController.testAllServers()
++
+         Item {
+             anchors.fill: parent
+ 
+@@ -338,14 +348,27 @@ PageType {
+                     onClicked: containersSheet.open()
+                 }
+ 
+-                BodyTextType {
++                RowLayout {
+                     Layout.fillWidth: true
+-                    Layout.topMargin: containersDropDown.visible ? 24 : 16
++                    Layout.topMargin: containersDropDown.visible ? 18 : 10
+                     Layout.leftMargin: 16
+-                    Layout.rightMargin: 16
++                    Layout.rightMargin: 22
++
++                    BodyTextType {
++                        Layout.fillWidth: true
+ 
+-                    text: qsTr("Servers")
+-                    color: AmneziaStyle.color.textTertiary
++                        text: qsTr("Servers")
++                        color: AmneziaStyle.color.textTertiary
++                    }
++
++                    IconButtonType {
++                        size: IconButtonType.Small
++                        icon.source: "qrc:/images/controls/refresh-cw.svg"
++                        enabled: !ServerLatencyController.isTesting
++                        Accessible.name: qsTr("Test server ping")
++
++                        onClicked: ServerLatencyController.testAllServers()
++                    }
+                 }
+             }
+ 
+diff --git a/client/ui/qml/qml.qrc b/client/ui/qml/qml.qrc
+index 9cd6c05..47a6e95 100644
+--- a/client/ui/qml/qml.qrc
++++ b/client/ui/qml/qml.qrc
+@@ -25,6 +25,7 @@
+         <file>Components/QuestionDrawer.qml</file>
+         <file>Components/SelectLanguageDrawer.qml</file>
+         <file>Components/ServersListView.qml</file>
++        <file>Components/ServerLatencyBadge.qml</file>
+         <file>Components/SettingsContainersListView.qml</file>
+         <file>Components/BenefitRow.qml</file>
+         <file>Components/BenefitsPanel.qml</file>
