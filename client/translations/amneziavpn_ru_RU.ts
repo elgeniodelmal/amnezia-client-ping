@@ -851,6 +851,10 @@ Already installed containers were found on the server. All installed containers 
 <context>
     <name>PageHome</name>
     <message>
+        <source>Test server ping</source>
+        <translation>Обновить задержку серверов</translation>
+    </message>
+    <message>
         <location filename="../ui/qml/Pages2/PageHome.qml" line="121"/>
         <source>Logging enabled</source>
         <translation>Логирование включено</translation>
@@ -7667,6 +7671,17 @@ Remove the server from the app to continue.</source>
         <location filename="../ui/qml/main2.qml" line="286"/>
         <source>Cannot remove server during active connection</source>
         <translation>Невозможно удалить сервер во время активного соединения</translation>
+    </message>
+</context>
+<context>
+    <name>ServerLatencyBadge</name>
+    <message>
+        <source>%1 ms</source>
+        <translation>%1 мс</translation>
+    </message>
+    <message>
+        <source>No reply</source>
+        <translation>Нет ответа</translation>
     </message>
 </context>
 </TS>
