@@ -159,6 +159,155 @@ PageType {
                 }
             }
 
+
+            Item {
+                id: httpsLatencyV3
+
+                Layout.fillWidth: true
+                Layout.preferredHeight: 36
+
+                property int latency: -1
+                property bool testing: false
+                property bool attempted: false
+                property var request: null
+                property double startedAt: 0
+
+                function cancelTest() {
+                    var oldRequest = request
+                    request = null
+                    testing = false
+                    timeoutTimer.stop()
+
+                    if (oldRequest !== null)
+                        oldRequest.abort()
+                }
+
+                function testLatency() {
+                    if (testing)
+                        return
+
+                    testing = true
+                    attempted = true
+
+                    var xhr = new XMLHttpRequest()
+                    request = xhr
+
+                    xhr.onreadystatechange = function() {
+                        if (request !== xhr)
+                            return
+
+                        if (xhr.readyState !== XMLHttpRequest.DONE)
+                            return
+
+                        timeoutTimer.stop()
+
+                        if (xhr.status === 204) {
+                            latency = Math.max(
+                                1, Date.now() - startedAt
+                            )
+                        } else {
+                            latency = -1
+                        }
+
+                        request = null
+                        testing = false
+
+                        console.log(
+                            "[PingV3] HTTPS:",
+                            latency,
+                            "ms, status:",
+                            xhr.status
+                        )
+                    }
+
+                    try {
+                        xhr.open(
+                            "GET",
+                            "https://www.gstatic.com/generate_204?t="
+                            + Date.now()
+                        )
+
+                        xhr.setRequestHeader(
+                            "Cache-Control", "no-cache"
+                        )
+
+                        startedAt = Date.now()
+                        timeoutTimer.restart()
+                        xhr.send()
+                    } catch (error) {
+                        cancelTest()
+                        latency = -1
+                        console.log("[PingV3]", error)
+                    }
+                }
+
+                Timer {
+                    id: timeoutTimer
+                    interval: 8000
+                    repeat: false
+
+                    onTriggered: {
+                        httpsLatencyV3.cancelTest()
+                        httpsLatencyV3.latency = -1
+                        console.log("[PingV3] HTTPS timeout")
+                    }
+                }
+
+                Timer {
+                    interval: 10000
+                    repeat: true
+                    running: httpsLatencyV3.visible
+                             && httpsLatencyV3.attempted
+
+                    onTriggered: httpsLatencyV3.testLatency()
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    font.pixelSize: 15
+
+                    text: {
+                        if (httpsLatencyV3.testing)
+                            return "HTTPS: ..."
+
+                        if (!httpsLatencyV3.attempted)
+                            return "HTTPS: нажмите для теста"
+
+                        if (httpsLatencyV3.latency < 0)
+                            return "HTTPS: нет ответа"
+
+                        return "HTTPS: "
+                            + httpsLatencyV3.latency
+                            + " мс"
+                    }
+
+                    color: {
+                        var ms = httpsLatencyV3.latency
+
+                        if (ms < 0 || httpsLatencyV3.testing)
+                            return "#999999"
+
+                        if (ms < 100)
+                            return "#4CAF50"
+
+                        if (ms < 200)
+                            return "#FFC107"
+
+                        if (ms < 300)
+                            return "#FF9800"
+
+                        return "#F44336"
+                    }
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: httpsLatencyV3.testLatency()
+                }
+
+                Component.onDestruction: cancelTest()
+            }
+
             ServerLatencyBadge {
                 latencyMs: ServerLatencyController.defaultServerLatencyMs
                 quality: ServerLatencyController.defaultServerQuality
