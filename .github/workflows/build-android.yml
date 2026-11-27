@@ -1,0 +1,145 @@
+name: Build Amnezia Ping APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      QT_VERSION: '6.10.3'
+      QT_MODULES: 'qtremoteobjects qt5compat qtimageformats qtshadertools'
+      ANDROID_PLATFORM: android-30
+      NDK_VERSION: '27.0.11718014'
+      APP_ANDROID_MIN_SDK: '30'
+      APP_ANDROID_MAX_SDK: ''
+      APP_ANDROID_VERSION_CODE_OFFSET: '1'
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake ccache libgl1-mesa-dev
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install Conan
+        run: pip install "conan==2.28.0"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platforms;android-30 ndk;27.0.11718014"
+
+      - name: Install desktop Qt
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: ${{ env.QT_MODULES }}
+          dir: ${{ runner.temp }}
+
+      - name: Install Android ARM64 Qt
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: all_os
+          target: android
+          arch: android_arm64_v8a
+          modules: ${{ env.QT_MODULES }}
+          dir: ${{ runner.temp }}
+
+      - name: Install Android ARMv7 Qt
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: all_os
+          target: android
+          arch: android_armv7
+          modules: ${{ env.QT_MODULES }}
+          dir: ${{ runner.temp }}
+
+      - name: Install Android x86 Qt
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: all_os
+          target: android
+          arch: android_x86
+          modules: ${{ env.QT_MODULES }}
+          dir: ${{ runner.temp }}
+
+      - name: Install Android x86_64 Qt
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: all_os
+          target: android
+          arch: android_x86_64
+          modules: ${{ env.QT_MODULES }}
+          dir: ${{ runner.temp }}
+
+      - name: Generate temporary signing key
+        run: |
+          PASS=$(openssl rand -hex 24)
+          echo "::add-mask::$PASS"
+          keytool -genkeypair \
+            -keystore android.keystore \
+            -storepass "$PASS" \
+            -keypass "$PASS" \
+            -alias amneziaping \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Amnezia Ping"
+          echo "QT_ANDROID_KEYSTORE_STORE_PASS=$PASS" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          QT_ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android.keystore
+          QT_ANDROID_KEYSTORE_ALIAS: amneziaping
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/build.sh -t android --sign
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          find deploy/build -type f \
+            -name '*.apk' \
+            ! -name '*unsigned*' \
+            -exec cp {} artifacts/ \;
+          ls -lh artifacts
+          test -n "$(find artifacts -name '*.apk' -print -quit)"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Amnezia-Ping-Android
+          path: artifacts/*.apk
+          if-no-files-found: error
+          retention-days: 14
