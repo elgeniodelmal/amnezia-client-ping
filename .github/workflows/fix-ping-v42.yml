@@ -1,0 +1,389 @@
+
+name: Apply Ping V4.2 Qt Integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ping-v42-dev
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    env:
+      NDK_VERSION: "27.0.11718014"
+      ANDROID_API: "30"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: experiments/ping-v4/go.mod
+          cache: false
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager "ndk;${NDK_VERSION}"
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build all Android architectures
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+
+          cd experiments/ping-v4
+
+          build_library() {
+            local ABI="$1"
+            local ARCH="$2"
+            local TRIPLE="$3"
+
+            export GOOS=android
+            export GOARCH="$ARCH"
+            export CGO_ENABLED=1
+
+            unset GOARM || true
+
+            if [ "$ARCH" = "arm" ]; then
+              export GOARM=7
+            fi
+
+            export CC="$TOOLCHAIN/bin/${TRIPLE}${ANDROID_API}-clang"
+            export CXX="$TOOLCHAIN/bin/${TRIPLE}${ANDROID_API}-clang++"
+
+            test -x "$CC"
+
+            mkdir -p "dist/$ABI"
+
+            go build \
+              -trimpath \
+              -buildmode=c-shared \
+              -ldflags="-s -w" \
+              -o "dist/$ABI/libamneziaping.so" \
+              ./cmd/androidbridge
+
+            local LIB="dist/$ABI/libamneziaping.so"
+
+            test -s "$LIB"
+
+            "$TOOLCHAIN/bin/llvm-nm" \
+              -D --defined-only "$LIB" \
+              > "/tmp/ping-$ABI-symbols.txt"
+
+            grep -E ' T AmneziaPingVersion$' \
+              "/tmp/ping-$ABI-symbols.txt"
+
+            grep -E ' T AmneziaPingMeasureOffline$' \
+              "/tmp/ping-$ABI-symbols.txt"
+
+            file "$LIB"
+          }
+
+          build_library arm64-v8a arm64 aarch64-linux-android
+          build_library armeabi-v7a arm armv7a-linux-androideabi
+          build_library x86_64 amd64 x86_64-linux-android
+          build_library x86 386 i686-linux-android
+
+      - name: Create CMake integration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > client/cmake/pingV4.cmake <<'EOF'
+          # Amnezia Ping V4 native Android integration
+
+          find_program(PING_GO_EXECUTABLE NAMES go REQUIRED)
+
+          set(PING_GO_SOURCE
+              "${CMAKE_CURRENT_LIST_DIR}/../../experiments/ping-v4"
+          )
+
+          if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+              set(PING_GO_ARCH arm64)
+              set(PING_CLANG_TRIPLE aarch64-linux-android)
+              set(PING_GO_ARM "")
+          elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+              set(PING_GO_ARCH arm)
+              set(PING_CLANG_TRIPLE armv7a-linux-androideabi)
+              set(PING_GO_ARM 7)
+          elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
+              set(PING_GO_ARCH amd64)
+              set(PING_CLANG_TRIPLE x86_64-linux-android)
+              set(PING_GO_ARM "")
+          elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86")
+              set(PING_GO_ARCH 386)
+              set(PING_CLANG_TRIPLE i686-linux-android)
+              set(PING_GO_ARM "")
+          else()
+              message(FATAL_ERROR
+                  "Ping V4: unsupported Android ABI"
+              )
+          endif()
+
+          get_filename_component(
+              PING_CLANG_DIR
+              "${CMAKE_C_COMPILER}"
+              DIRECTORY
+          )
+
+          set(PING_CC
+              "${PING_CLANG_DIR}/${PING_CLANG_TRIPLE}${APP_ANDROID_MIN_SDK}-clang"
+          )
+
+          set(PING_CXX
+              "${PING_CLANG_DIR}/${PING_CLANG_TRIPLE}${APP_ANDROID_MIN_SDK}-clang++"
+          )
+
+          if(NOT EXISTS "${PING_CC}")
+              message(FATAL_ERROR
+                  "Ping V4 compiler not found: ${PING_CC}"
+              )
+          endif()
+
+          set(PING_OUTPUT_DIR
+              "${CMAKE_CURRENT_BINARY_DIR}/ping-v4/${CMAKE_ANDROID_ARCH_ABI}"
+          )
+
+          file(MAKE_DIRECTORY "${PING_OUTPUT_DIR}")
+
+          set(PING_LIBRARY
+              "${PING_OUTPUT_DIR}/libamneziaping.so"
+          )
+
+          execute_process(
+              COMMAND "${CMAKE_COMMAND}" -E env
+                  "GOOS=android"
+                  "GOARCH=${PING_GO_ARCH}"
+                  "GOARM=${PING_GO_ARM}"
+                  "CGO_ENABLED=1"
+                  "GOTOOLCHAIN=auto"
+                  "CC=${PING_CC}"
+                  "CXX=${PING_CXX}"
+                  "${PING_GO_EXECUTABLE}" build
+                  -trimpath
+                  -buildmode=c-shared
+                  "-ldflags=-s -w"
+                  -o "${PING_LIBRARY}"
+                  ./cmd/androidbridge
+              WORKING_DIRECTORY "${PING_GO_SOURCE}"
+              RESULT_VARIABLE PING_BUILD_RESULT
+          )
+
+          if(NOT PING_BUILD_RESULT EQUAL 0)
+              message(FATAL_ERROR
+                  "Ping V4 native library build failed"
+              )
+          endif()
+
+          if(NOT EXISTS "${PING_LIBRARY}")
+              message(FATAL_ERROR
+                  "Ping V4 native library missing"
+              )
+          endif()
+
+          set_property(
+              TARGET ${PROJECT}
+              APPEND PROPERTY QT_ANDROID_EXTRA_LIBS
+              "${PING_LIBRARY}"
+          )
+
+          message(STATUS
+              "Ping V4 library ready: ${PING_LIBRARY}"
+          )
+          EOF
+
+      - name: Patch Qt Android integration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("client/cmake/android.cmake")
+          text = path.read_text()
+
+          marker = 'include("${CMAKE_CURRENT_LIST_DIR}/pingV4.cmake")'
+
+          if marker not in text:
+              anchor = "find_package(awg-android REQUIRED)"
+
+              if text.count(anchor) != 1:
+                  raise RuntimeError(
+                      "Android CMake anchor not found"
+                  )
+
+              text = text.replace(
+                  anchor,
+                  marker + "\n\n" + anchor,
+                  1,
+              )
+
+              path.write_text(text)
+
+          print("Android CMake integration ready")
+          PY
+
+      - name: Add native runtime verification
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "client/core/controllers/"
+              "serverLatencyController.cpp"
+          )
+
+          text = path.read_text()
+
+          if "[PingV42]" not in text:
+
+              include_anchor = "#include <QJsonDocument>"
+
+              if text.count(include_anchor) != 1:
+                  raise RuntimeError(
+                      "Include anchor not found"
+                  )
+
+              text = text.replace(
+                  include_anchor,
+                  include_anchor + """
+          #include <QDebug>
+          #ifdef Q_OS_ANDROID
+          #include <QLibrary>
+          #endif
+          """,
+                  1,
+              )
+
+              constructor_anchor = (
+                  "m_connectionController(connectionController)\n"
+                  "{\n"
+                  "}"
+              )
+
+              if text.count(constructor_anchor) != 1:
+                  raise RuntimeError(
+                      "Constructor anchor not found"
+                  )
+
+              replacement = """m_connectionController(connectionController)
+          {
+          #ifdef Q_OS_ANDROID
+              static QLibrary pingLibrary(
+                  QStringLiteral("amneziaping")
+              );
+
+              pingLibrary.setLoadHints(
+                  QLibrary::PreventUnloadHint
+              );
+
+              if (!pingLibrary.load()) {
+                  qWarning() << "[PingV42] Native load failed:"
+                             << pingLibrary.errorString();
+              } else {
+                  using VersionFunction = int (*)();
+
+                  auto version = reinterpret_cast<VersionFunction>(
+                      pingLibrary.resolve("AmneziaPingVersion")
+                  );
+
+                  auto measure = pingLibrary.resolve(
+                      "AmneziaPingMeasureOffline"
+                  );
+
+                  if (version && measure) {
+                      qInfo() << "[PingV42] Native bridge ready:"
+                              << version();
+                  } else {
+                      qWarning() << "[PingV42] Missing native symbols";
+                  }
+              }
+          #endif
+          }"""
+
+              text = text.replace(
+                  constructor_anchor,
+                  replacement,
+                  1,
+              )
+
+              path.write_text(text)
+
+          print("Qt native verification ready")
+          PY
+
+      - name: Check changes
+        run: |
+          git diff --check
+          git diff --stat
+
+          grep -n "PingV42" \
+            client/core/controllers/serverLatencyController.cpp
+
+          grep -n "pingV4.cmake" \
+            client/cmake/android.cmake
+
+      - name: Save integration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            client/cmake/pingV4.cmake \
+            client/cmake/android.cmake \
+            client/core/controllers/serverLatencyController.cpp
+
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+
+          git commit -m "Integrate Ping V4.2 Android native library"
+          git push origin HEAD:dev
+
+      - name: Upload native libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: Amnezia-Ping-V42-All-ABI
+          path: experiments/ping-v4/dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summary
+        run: |
+          echo "## Ping V4.2 Integration" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ARM64: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ARMv7: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- x86_64: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- x86: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Qt integration patch: APPLIED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Full APK compilation: PENDING" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Android runtime verification: PENDING" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Premium latency test: PENDING" >> "$GITHUB_STEP_SUMMARY"
