@@ -48,7 +48,7 @@ set(SOURCES ${SOURCES}
 )
 
 
-include("${CMAKE_CURRENT_LIST_DIR}/pingV4.cmake")
+# Ping V4 native library temporarily disabled
 
 find_package(awg-android REQUIRED)
 set_property(TARGET ${PROJECT} APPEND PROPERTY QT_ANDROID_EXTRA_LIBS
