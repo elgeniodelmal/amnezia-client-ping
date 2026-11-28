@@ -1,0 +1,309 @@
+
+name: Build Ping V4.1 Android Bridge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ping-v41-dev
+  cancel-in-progress: false
+
+jobs:
+  android-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    env:
+      NDK_VERSION: "27.0.11718014"
+      ANDROID_API: "30"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: experiments/ping-v4/go.mod
+          cache: false
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager "ndk;${NDK_VERSION}"
+
+          NDK="${ANDROID_HOME}/ndk/${NDK_VERSION}"
+
+          test -d "$NDK"
+
+          echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+
+      - name: Create native C bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd experiments/ping-v4
+          mkdir -p cmd/androidbridge
+
+          cat > cmd/androidbridge/main.go <<'EOF'
+          package main
+
+          /*
+          #include <stdint.h>
+          */
+          import "C"
+
+          import (
+              "context"
+              "net/netip"
+              "strings"
+              "sync"
+
+              latency "amnezia-ping-v4"
+          )
+
+          var probeLock sync.Mutex
+
+          func parseAddresses(
+              input string,
+          ) ([]netip.Addr, error) {
+
+              var result []netip.Addr
+
+              for _, value := range strings.Split(
+                  input, ",",
+              ) {
+                  value = strings.TrimSpace(value)
+
+                  if value == "" {
+                      continue
+                  }
+
+                  if strings.Contains(value, "/") {
+                      prefix, err := netip.ParsePrefix(value)
+
+                      if err != nil {
+                          return nil, err
+                      }
+
+                      result = append(
+                          result, prefix.Addr(),
+                      )
+                  } else {
+                      address, err := netip.ParseAddr(value)
+
+                      if err != nil {
+                          return nil, err
+                      }
+
+                      result = append(result, address)
+                  }
+              }
+
+              return result, nil
+          }
+
+          //export AmneziaPingVersion
+          func AmneziaPingVersion() C.int {
+              return 401
+          }
+
+          //export AmneziaPingMeasureOffline
+          func AmneziaPingMeasureOffline(
+              addresses *C.char,
+              dns *C.char,
+              mtu C.int,
+              uapi *C.char,
+              vpnActive C.int,
+          ) (result C.int64_t) {
+
+              result = -5
+
+              defer func() {
+                  if recover() != nil {
+                      result = -5
+                  }
+              }()
+
+              if vpnActive != 0 {
+                  return -4
+              }
+
+              if addresses == nil ||
+                  dns == nil ||
+                  uapi == nil {
+                  return -2
+              }
+
+              if !probeLock.TryLock() {
+                  return -3
+              }
+
+              defer probeLock.Unlock()
+
+              localAddresses, err := parseAddresses(
+                  C.GoString(addresses),
+              )
+              if err != nil {
+                  return -2
+              }
+
+              dnsAddresses, err := parseAddresses(
+                  C.GoString(dns),
+              )
+              if err != nil {
+                  return -2
+              }
+
+              config := C.GoString(uapi)
+
+              if len(localAddresses) == 0 ||
+                  len(dnsAddresses) == 0 ||
+                  int(mtu) < 576 ||
+                  int(mtu) > 9000 ||
+                  strings.TrimSpace(config) == "" {
+                  return -2
+              }
+
+              elapsed, err := latency.MeasureOffline(
+                  context.Background(),
+                  localAddresses,
+                  dnsAddresses,
+                  int(mtu),
+                  config,
+              )
+
+              if err != nil {
+                  return -1
+              }
+
+              ms := elapsed.Milliseconds()
+
+              if ms < 1 {
+                  ms = 1
+              }
+
+              return C.int64_t(ms)
+          }
+
+          func main() {}
+          EOF
+
+          gofmt -w cmd/androidbridge/main.go
+
+      - name: Check Go source
+        working-directory: experiments/ping-v4
+        run: |
+          go mod verify
+          go test -v -timeout 120s ./...
+          go vet ./...
+
+      - name: Build Android ARM64 library
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+
+          export GOOS=android
+          export GOARCH=arm64
+          export CGO_ENABLED=1
+
+          export CC="$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang"
+          export CXX="$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang++"
+
+          test -x "$CC"
+
+          cd experiments/ping-v4
+
+          mkdir -p dist/arm64-v8a
+
+          go build \
+            -trimpath \
+            -buildmode=c-shared \
+            -ldflags="-s -w" \
+            -o dist/arm64-v8a/libamneziaping.so \
+            ./cmd/androidbridge
+
+      - name: Verify Android library
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+
+          LIB="experiments/ping-v4/dist/arm64-v8a/libamneziaping.so"
+
+          HEADER="experiments/ping-v4/dist/arm64-v8a/libamneziaping.h"
+
+          test -s "$LIB"
+          test -s "$HEADER"
+
+          file "$LIB"
+
+          "$TOOLCHAIN/bin/llvm-readelf" -h "$LIB" \
+            | tee /tmp/ping-elf.txt
+
+          grep -q "AArch64" /tmp/ping-elf.txt
+
+          "$TOOLCHAIN/bin/llvm-nm" \
+            -D --defined-only "$LIB" \
+            > /tmp/ping-symbols.txt
+
+          grep -E ' T AmneziaPingVersion$' \
+            /tmp/ping-symbols.txt
+
+          grep -E ' T AmneziaPingMeasureOffline$' \
+            /tmp/ping-symbols.txt
+
+          "$TOOLCHAIN/bin/llvm-readelf" -d "$LIB"
+
+          ls -lh "$LIB" "$HEADER"
+
+      - name: Save bridge source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add experiments/ping-v4/cmd/androidbridge/main.go
+
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+
+          git commit -m "Add Ping V4.1 Android native bridge"
+          git push origin HEAD:dev
+
+      - name: Upload Android native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: Amnezia-Ping-V41-ARM64
+          path: experiments/ping-v4/dist/arm64-v8a/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summary
+        run: |
+          echo "## Amnezia Ping V4.1" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Go tests: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Android ARM64 compilation: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Native exported symbols: VERIFIED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Qt integration: PENDING" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Android runtime test: PENDING" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Premium live test: PENDING" >> "$GITHUB_STEP_SUMMARY"
