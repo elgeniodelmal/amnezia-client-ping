@@ -1,6 +1,11 @@
 #include "serverLatencyController.h"
 
 #include <QJsonDocument>
+#include <QDebug>
+#ifdef Q_OS_ANDROID
+#include <QLibrary>
+#endif
+
 
 #include "core/controllers/connectionController.h"
 #include "core/controllers/serversController.h"
@@ -17,6 +22,37 @@ ServerLatencyController::ServerLatencyController(ServersController *serversContr
       m_settingsController(settingsController),
       m_connectionController(connectionController)
 {
+#ifdef Q_OS_ANDROID
+    static QLibrary pingLibrary(
+        QStringLiteral("amneziaping")
+    );
+
+    pingLibrary.setLoadHints(
+        QLibrary::PreventUnloadHint
+    );
+
+    if (!pingLibrary.load()) {
+        qWarning() << "[PingV42] Native load failed:"
+                   << pingLibrary.errorString();
+    } else {
+        using VersionFunction = int (*)();
+
+        auto version = reinterpret_cast<VersionFunction>(
+            pingLibrary.resolve("AmneziaPingVersion")
+        );
+
+        auto measure = pingLibrary.resolve(
+            "AmneziaPingMeasureOffline"
+        );
+
+        if (version && measure) {
+            qInfo() << "[PingV42] Native bridge ready:"
+                    << version();
+        } else {
+            qWarning() << "[PingV42] Missing native symbols";
+        }
+    }
+#endif
 }
 
 void ServerLatencyController::testAllServers()

@@ -48,6 +48,8 @@ set(SOURCES ${SOURCES}
 )
 
 
+include("${CMAKE_CURRENT_LIST_DIR}/pingV4.cmake")
+
 find_package(awg-android REQUIRED)
 set_property(TARGET ${PROJECT} APPEND PROPERTY QT_ANDROID_EXTRA_LIBS
     $<TARGET_FILE:amnezia::awg-android>
