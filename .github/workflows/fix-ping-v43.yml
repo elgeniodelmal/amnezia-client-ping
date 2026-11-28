@@ -1,0 +1,122 @@
+
+name: Fix Ping V4.3 Startup Crash
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Isolate native library
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          cmake = Path("client/cmake/android.cmake")
+          text = cmake.read_text()
+
+          marker = 'include("${CMAKE_CURRENT_LIST_DIR}/pingV4.cmake")'
+
+          if marker in text:
+              text = text.replace(
+                  marker,
+                  "# Ping V4 native library temporarily disabled"
+              )
+              cmake.write_text(text)
+
+          path = Path(
+              "client/core/controllers/"
+              "serverLatencyController.cpp"
+          )
+
+          text = path.read_text()
+
+          if "[PingV42]" in text:
+              start = text.index(
+                  "#ifdef Q_OS_ANDROID\n"
+                  "    static QLibrary pingLibrary"
+              )
+
+              end = text.index("#endif", start)
+              end += len("#endif")
+
+              text = (
+                  text[:start]
+                  + '    qInfo() << "[PingV43] Native bridge isolated";'
+                  + text[end:]
+              )
+
+              text = text.replace(
+                  "#ifdef Q_OS_ANDROID\n"
+                  "#include <QLibrary>\n"
+                  "#endif\n",
+                  ""
+              )
+
+              path.write_text(text)
+
+          assert "[PingV42]" not in path.read_text()
+          assert marker not in cmake.read_text()
+
+          assert Path(
+              "experiments/ping-v4/latency.go"
+          ).is_file()
+
+          assert Path(
+              "experiments/ping-v4/cmd/androidbridge/main.go"
+          ).is_file()
+
+          print("Native library isolated")
+          print("Go engine preserved")
+          PY
+
+      - name: Verify changes
+        run: |
+          git diff --check
+          git diff --stat
+          git diff
+
+      - name: Save crash fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            client/cmake/android.cmake \
+            client/core/controllers/serverLatencyController.cpp
+
+          if git diff --cached --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+
+          git commit -m "V4.3 isolate native bridge to diagnose startup crash"
+          git push origin HEAD:dev
+
+      - name: Summary
+        run: |
+          echo "## Ping V4.3 Startup Recovery" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Native library packaging: DISABLED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Startup native loading: DISABLED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Go source code: PRESERVED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Premium configuration: UNCHANGED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Android runtime test: PENDING" >> "$GITHUB_STEP_SUMMARY"
