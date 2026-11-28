@@ -1,0 +1,291 @@
+
+name: Apply Ping V4 Native Engine
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ping-v4-dev
+  cancel-in-progress: false
+
+jobs:
+  native-engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+
+      - name: Create native latency engine
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p experiments/ping-v4
+          cd experiments/ping-v4
+
+          if [ ! -f go.mod ]; then
+            go mod init amnezia-ping-v4
+            go get github.com/amnezia-vpn/amneziawg-go/v3@master
+          fi
+
+          cat > latency.go <<'EOF'
+          package latency
+
+          import (
+              "context"
+              "errors"
+              "net/http"
+              "net/netip"
+              "strings"
+              "time"
+
+              "github.com/amnezia-vpn/amneziawg-go/v3/conn"
+              "github.com/amnezia-vpn/amneziawg-go/v3/device"
+              "github.com/amnezia-vpn/amneziawg-go/v3/tun/netstack"
+          )
+
+          // MeasureOffline requires an inactive peer identity
+          // and correctly routed outer UDP sockets.
+          // Never log private keys or raw UAPI configuration.
+          func MeasureOffline(
+              ctx context.Context,
+              addresses []netip.Addr,
+              dns []netip.Addr,
+              mtu int,
+              uapi string,
+          ) (time.Duration, error) {
+
+              if len(addresses) == 0 ||
+                  len(dns) == 0 ||
+                  mtu < 576 ||
+                  mtu > 9000 ||
+                  strings.TrimSpace(uapi) == "" {
+                  return 0, errors.New(
+                      "invalid probe configuration",
+                  )
+              }
+
+              if err := ctx.Err(); err != nil {
+                  return 0, err
+              }
+
+              ctx, cancel := context.WithTimeout(
+                  ctx, 12*time.Second,
+              )
+              defer cancel()
+
+              tun, network, err := netstack.CreateNetTUN(
+                  addresses, dns, mtu,
+              )
+              if err != nil {
+                  return 0, errors.New(
+                      "netstack initialization failed",
+                  )
+              }
+
+              dev := device.NewDevice(
+                  tun,
+                  conn.NewDefaultBind(),
+                  device.NewLogger(
+                      device.LogLevelSilent, "",
+                  ),
+              )
+              defer dev.Close()
+
+              if err = dev.IpcSet(uapi); err != nil {
+                  return 0, errors.New(
+                      "peer configuration failed",
+                  )
+              }
+
+              if err = dev.Up(); err != nil {
+                  return 0, errors.New(
+                      "tunnel activation failed",
+                  )
+              }
+
+              transport := &http.Transport{
+                  DialContext: network.DialContext,
+                  DisableKeepAlives: true,
+                  TLSHandshakeTimeout: 8*time.Second,
+                  ResponseHeaderTimeout: 8*time.Second,
+              }
+              defer transport.CloseIdleConnections()
+
+              client := &http.Client{
+                  Transport: transport,
+                  Timeout: 12*time.Second,
+                  CheckRedirect: func(
+                      req *http.Request,
+                      via []*http.Request,
+                  ) error {
+                      return http.ErrUseLastResponse
+                  },
+              }
+
+              req, err := http.NewRequestWithContext(
+                  ctx,
+                  http.MethodGet,
+                  "https://www.gstatic.com/generate_204",
+                  nil,
+              )
+              if err != nil {
+                  return 0, errors.New(
+                      "request initialization failed",
+                  )
+              }
+
+              req.Header.Set("Cache-Control", "no-cache")
+
+              start := time.Now()
+              response, err := client.Do(req)
+              elapsed := time.Since(start)
+
+              if err != nil {
+                  return 0, errors.New(
+                      "HTTPS probe failed",
+                  )
+              }
+
+              defer response.Body.Close()
+
+              if response.StatusCode != 204 {
+                  return 0, errors.New(
+                      "unexpected HTTP status",
+                  )
+              }
+
+              return elapsed, nil
+          }
+          EOF
+
+          cat > latency_test.go <<'EOF'
+          package latency
+
+          import (
+              "context"
+              "net/netip"
+              "testing"
+          )
+
+          func TestInvalidConfiguration(t *testing.T) {
+              elapsed, err := MeasureOffline(
+                  context.Background(),
+                  nil,
+                  nil,
+                  0,
+                  "",
+              )
+
+              if err == nil || elapsed != 0 {
+                  t.Fatal(
+                      "invalid configuration accepted",
+                  )
+              }
+          }
+
+          func TestCancelledContext(t *testing.T) {
+              ctx, cancel := context.WithCancel(
+                  context.Background(),
+              )
+              cancel()
+
+              addresses := []netip.Addr{
+                  netip.MustParseAddr("10.0.0.2"),
+              }
+
+              dns := []netip.Addr{
+                  netip.MustParseAddr("1.1.1.1"),
+              }
+
+              elapsed, err := MeasureOffline(
+                  ctx,
+                  addresses,
+                  dns,
+                  1420,
+                  "test",
+              )
+
+              if err == nil || elapsed != 0 {
+                  t.Fatal(
+                      "cancelled context accepted",
+                  )
+              }
+          }
+          EOF
+
+          gofmt -w latency.go latency_test.go
+          go mod tidy
+
+      - name: Check dependencies
+        working-directory: experiments/ping-v4
+        run: |
+          go version
+          go list -m all
+          go mod verify
+
+      - name: Compile native engine
+        working-directory: experiments/ping-v4
+        run: |
+          go build -v ./...
+
+      - name: Run unit tests
+        working-directory: experiments/ping-v4
+        run: |
+          go test -v -timeout 120s ./...
+
+      - name: Static analysis
+        working-directory: experiments/ping-v4
+        run: |
+          go vet ./...
+
+      - name: Save verified source code
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add experiments/ping-v4
+
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+
+          git commit -m "Add AmneziaWG Netstack latency engine V4"
+          git push origin HEAD:dev
+
+      - name: Upload native engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: Amnezia-Ping-V4-Native
+          path: experiments/ping-v4/
+          retention-days: 14
+
+      - name: Summary
+        run: |
+          echo "## Ping V4 Native Engine" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Go compilation: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Unit tests: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Static analysis: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Android integration: PENDING" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Premium live test: PENDING" >> "$GITHUB_STEP_SUMMARY"
